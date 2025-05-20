@@ -260,10 +260,78 @@ export const deleteCandidateVote = async (
   }
 };
 
+/**
+ * 사용자가 특정 후보자에게 찬성 투표했는지 여부만 확인
+ * @returns true: 찬성 투표함, false: 찬성 투표하지 않음(투표 안했거나 반대 투표)
+ */
+export const hasUserVotedForCandidate = async (
+  candidateId: string,
+  userId: string
+): Promise<boolean> => {
+  try {
+    const { data, error } = await supabaseClient
+      .from("candidate_votes")
+      .select("vote_type")
+      .eq("candidate_id", candidateId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      logger.error(
+        { error, candidateId, userId },
+        "Error checking if user voted for candidate"
+      );
+      return false;
+    }
+
+    // data가 없으면 투표하지 않은 것, vote_type이 true면 찬성 투표
+    return data?.vote_type === true;
+  } catch (error) {
+    logger.error(
+      { error, candidateId, userId },
+      "Exception when checking if user voted for candidate"
+    );
+    return false;
+  }
+};
+
+/**
+ * 사용자가 어떤 후보자든 투표한 적이 있는지 여부만 확인
+ * @returns true: 투표한 적 있음, false: 투표한 적 없음
+ */
+export const hasUserVotedAny = async (userId: string): Promise<boolean> => {
+  try {
+    const { data, error, count } = await supabaseClient
+      .from("candidate_votes")
+      .select("id", { count: "exact" })
+      .eq("user_id", userId)
+      .limit(1);
+
+    if (error) {
+      logger.error(
+        { error, userId },
+        "Error checking if user voted for any candidate"
+      );
+      return false;
+    }
+
+    // count가 0보다 크면 투표한 적이 있는 것
+    return (count ?? 0) > 0;
+  } catch (error) {
+    logger.error(
+      { error, userId },
+      "Exception when checking if user voted for any candidate"
+    );
+    return false;
+  }
+};
+
 export default {
   voteCandidateById,
   getUserCandidateVote,
   getCandidateVoteStats,
   getAllCandidateVoteStats,
   deleteCandidateVote,
+  hasUserVotedForCandidate,
+  hasUserVotedAny,
 };

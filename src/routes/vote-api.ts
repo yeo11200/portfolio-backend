@@ -108,6 +108,87 @@ export default async function voteRoutes(
     }
   );
 
+  // 사용자가 특정 후보자에게 찬성 투표했는지 여부만 확인
+  fastify.get(
+    "/api/vote/has-voted/:candidate_id",
+    async (
+      request: FastifyRequest<{
+        Params: {
+          candidate_id: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const { candidate_id } = request.params;
+
+        // 사용자 ID는 헤더에서 가져옴
+        const user_id = request.headers["x-user-id"] as string;
+        if (!user_id) {
+          return reply.status(401).send({
+            status: "error",
+            message: "User ID is required in x-user-id header",
+          });
+        }
+
+        const hasVoted = await voteService.hasUserVotedForCandidate(
+          candidate_id,
+          user_id
+        );
+
+        return reply.send({
+          status: "success",
+          data: {
+            has_voted: hasVoted,
+          },
+        });
+      } catch (error) {
+        logger.error(
+          { error },
+          "Error checking if user has voted for candidate"
+        );
+        return reply.status(500).send({
+          status: "error",
+          message: "Internal server error",
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    }
+  );
+
+  // 사용자가 어떤 후보자든 투표한 적이 있는지 여부만 확인
+  fastify.get("/api/vote/has-voted-any", async (request, reply) => {
+    try {
+      // 사용자 ID는 헤더에서 가져옴
+      const user_id = request.headers["x-user-id"] as string;
+      if (!user_id) {
+        return reply.status(401).send({
+          status: "error",
+          message: "User ID is required in x-user-id header",
+        });
+      }
+
+      const hasVoted = await voteService.hasUserVotedAny(user_id);
+
+      return reply.send({
+        status: "success",
+        data: {
+          has_voted: hasVoted,
+        },
+      });
+    } catch (error) {
+      logger.error(
+        { error },
+        "Error checking if user has voted for any candidate"
+      );
+      return reply.status(500).send({
+        status: "error",
+        message: "Internal server error",
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  });
+
   // 후보자 투표 통계
   fastify.get(
     "/api/vote/stats/candidate/:candidate_id",
