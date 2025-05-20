@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import dotenv from "dotenv";
 import routes from "./routes/api";
+import voteRoutes from "./routes/vote-api";
 import scrapeJob, { runScrapeJob, runAnalysisJob } from "./jobs/scrape-job";
 import cleanupJob from "./jobs/cleanup-job";
 import logger from "./utils/logger";
@@ -39,7 +40,7 @@ const fastify = Fastify({
 // CORS 설정
 fastify.register(import("@fastify/cors"), {
   origin: "*", // 개발용 설정, 프로덕션에서는 특정 도메인으로 제한
-  methods: ["GET", "POST"],
+  methods: ["GET", "POST", "DELETE"], // DELETE 메소드 추가
 });
 
 // 빈 JSON 본문 허용 설정
@@ -63,6 +64,9 @@ fastify.addContentTypeParser(
 
 // API 라우트 등록
 fastify.register(routes, { prefix: "/api" });
+
+// 투표 API 라우트 등록
+fastify.register(voteRoutes);
 
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {
