@@ -3,7 +3,6 @@ import cheerio from "cheerio";
 import {
   defaultPuppeteerOptions,
   candidateKeywords,
-  newsSources,
 } from "../config/puppeteer-config";
 import logger from "../utils/logger";
 import { NewsItem } from "./supabase-service";

@@ -1,7 +1,5 @@
 import cron from "node-cron";
 import logger from "../utils/logger";
-import puppeteerService from "../services/puppeteer-service";
-// import kakaoService from "../services/kakao-service";
 import naverService from "../services/naver-service";
 import supabaseService, { NewsItem } from "../services/supabase-service";
 import openaiService from "../services/openai-service";
