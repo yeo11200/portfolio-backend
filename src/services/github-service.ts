@@ -106,7 +106,13 @@ export const saveOrUpdateUser = async (
 
     // 기존 사용자가 없으면 새로 생성
     if (fetchError && fetchError.code === "PGRST116") {
-      logger.info(`Creating new user for GitHub ID: ${githubUser.id}`);
+      logger.info(
+        `Creating new user for GitHub ID: ${githubUser.id}, ${
+          githubUser.login
+        }, ${githubUser.avatar_url}, ${
+          tokenData.access_token
+        }, ${tokenExpiresAt.toISOString()}, ${githubUser.avatar_url}`
+      );
 
       const { data, error } = await supabaseClient
         .from("users")
