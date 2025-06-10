@@ -6,12 +6,13 @@ import scrapeJob, { runScrapeJob, runAnalysisJob } from "./jobs/scrape-job";
 import cleanupJob from "./jobs/cleanup-job";
 import logger from "./utils/logger";
 import { testConnection } from "./config/supabase-client";
+import githubRoutes from "./routes/github-api";
 
 // 환경 변수 로드
 dotenv.config();
 
 // 서버 포트 설정
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3010;
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Fastify 인스턴스 생성
@@ -66,7 +67,10 @@ fastify.addContentTypeParser(
 fastify.register(routes, { prefix: "/api" });
 
 // 투표 API 라우트 등록
-fastify.register(voteRoutes);
+fastify.register(voteRoutes, { prefix: "/api" });
+
+// 신규 프로젝트인, 깃헙 레포 유지 관리 라우트 등록
+fastify.register(githubRoutes, { prefix: "/api" });
 
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {

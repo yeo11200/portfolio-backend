@@ -7,7 +7,7 @@ export default async function voteRoutes(
 ): Promise<void> {
   // 후보자 투표
   fastify.post(
-    "/api/vote/candidate",
+    "/vote/candidate",
     async (
       request: FastifyRequest<{
         Body: {
@@ -67,7 +67,7 @@ export default async function voteRoutes(
 
   // 후보자 투표 조회
   fastify.get(
-    "/api/vote/candidate/:candidate_id",
+    "/vote/candidate/:candidate_id",
     async (
       request: FastifyRequest<{
         Params: {
@@ -110,7 +110,7 @@ export default async function voteRoutes(
 
   // 사용자가 특정 후보자에게 찬성 투표했는지 여부만 확인
   fastify.get(
-    "/api/vote/has-voted/:candidate_id",
+    "/vote/has-voted/:candidate_id",
     async (
       request: FastifyRequest<{
         Params: {
@@ -157,7 +157,7 @@ export default async function voteRoutes(
   );
 
   // 사용자가 어떤 후보자든 투표한 적이 있는지 여부만 확인
-  fastify.get("/api/vote/has-voted-any", async (request, reply) => {
+  fastify.get("/vote/has-voted-any", async (request, reply) => {
     try {
       // 사용자 ID는 헤더에서 가져옴
       const user_id = request.headers["x-user-id"] as string;
@@ -191,7 +191,7 @@ export default async function voteRoutes(
 
   // 후보자 투표 통계
   fastify.get(
-    "/api/vote/stats/candidate/:candidate_id",
+    "/vote/stats/candidate/:candidate_id",
     async (
       request: FastifyRequest<{
         Params: {
@@ -224,7 +224,7 @@ export default async function voteRoutes(
   );
 
   // 모든 후보자 투표 통계
-  fastify.get("/api/vote/stats/candidates", async (_request, reply) => {
+  fastify.get("/vote/stats/candidates", async (_request, reply) => {
     try {
       const stats = await voteService.getAllCandidateVoteStats();
 
@@ -244,7 +244,7 @@ export default async function voteRoutes(
 
   // 후보자 투표 삭제
   fastify.delete(
-    "/api/vote/candidate/:candidate_id",
+    "/vote/candidate/:candidate_id",
     async (
       request: FastifyRequest<{
         Params: {
