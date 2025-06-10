@@ -92,37 +92,97 @@ export const saveOrUpdateUser = async (
   tokenData: GitHubToken
 ): Promise<string> => {
   try {
+    // 먼저 기존 사용자 확인
+    const { data: existingUser, error: fetchError } = await supabaseClient
+      .from("users")
+      .select("*")
+      .eq("github_id", githubUser.id.toString())
+      .single();
+
     const tokenExpiresAt = new Date();
     tokenExpiresAt.setSeconds(
       tokenExpiresAt.getSeconds() + tokenData.expires_in
     );
 
-    const { data, error } = await supabaseClient
-      .from("users")
-      .upsert(
-        {
+    // 기존 사용자가 없으면 새로 생성
+    if (fetchError && fetchError.code === "PGRST116") {
+      logger.info(`Creating new user for GitHub ID: ${githubUser.id}`);
+
+      const { data, error } = await supabaseClient
+        .from("users")
+        .insert({
           github_id: githubUser.id.toString(),
           username: githubUser.login,
           avatar_url: githubUser.avatar_url,
           access_token: tokenData.access_token,
-          refresh_token: tokenData.refresh_token,
           token_expires_at: tokenExpiresAt.toISOString(),
+          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
-        },
-        { onConflict: "github_id" }
-      )
-      .select("id")
-      .single();
+        })
+        .select("id")
+        .single();
 
-    if (error) {
-      logger.error({ error }, "Error saving user");
-      throw new Error("Failed to save user");
+      if (error) {
+        logger.error({ error }, "Error creating new user");
+        throw new Error("Failed to create user");
+      }
+
+      return data.id;
     }
 
-    return data.id;
+    // 기존 사용자가 있으면 업데이트가 필요한지 확인
+    if (existingUser) {
+      const currentTime = new Date();
+      const tokenExpiry = new Date(existingUser.token_expires_at);
+
+      // 토큰이 만료되었거나, 사용자 정보가 변경된 경우에만 업데이트
+      const needsTokenUpdate = currentTime >= tokenExpiry;
+      const needsProfileUpdate =
+        existingUser.username !== githubUser.login ||
+        existingUser.avatar_url !== githubUser.avatar_url;
+
+      if (needsTokenUpdate || needsProfileUpdate) {
+        logger.info(
+          `Updating user ${existingUser.id}: token expired=${needsTokenUpdate}, profile changed=${needsProfileUpdate}`
+        );
+
+        const updateData: any = {
+          updated_at: new Date().toISOString(),
+        };
+
+        // 토큰 업데이트가 필요한 경우
+        if (needsTokenUpdate) {
+          updateData.access_token = tokenData.access_token;
+          updateData.token_expires_at = tokenExpiresAt.toISOString();
+        }
+
+        // 프로필 업데이트가 필요한 경우
+        if (needsProfileUpdate) {
+          updateData.username = githubUser.login;
+          updateData.avatar_url = githubUser.avatar_url;
+        }
+
+        const { error } = await supabaseClient
+          .from("users")
+          .update(updateData)
+          .eq("id", existingUser.id);
+
+        if (error) {
+          logger.error({ error }, "Error updating user");
+          throw new Error("Failed to update user");
+        }
+      } else {
+        logger.info(`User ${existingUser.id} is up to date, no update needed`);
+      }
+
+      return existingUser.id;
+    }
+
+    // 다른 에러가 발생한 경우
+    throw new Error("Unexpected error when checking existing user");
   } catch (error) {
-    logger.error({ error }, "Exception when saving user");
-    throw new Error("Failed to save user");
+    logger.error({ error }, "Exception when saving/updating user");
+    throw new Error("Failed to save or update user");
   }
 };
 
