@@ -88,13 +88,21 @@ export default async function githubRoutes(
         }
 
         const tokenData = await githubService.handleGitHubCallback(code);
+
+        logger.info(`Server is running on ${tokenData} tokenData`);
+
         const githubUser = await githubService.getGitHubUser(
           tokenData.access_token
         );
+
+        logger.info(`Server is running on ${githubUser} githubUser`);
+
         const userId = await githubService.saveOrUpdateUser(
           githubUser,
           tokenData
         );
+
+        logger.info(`Server is running on ${userId} userId`);
 
         // JWT 토큰 생성
         const token = generateToken(userId);
