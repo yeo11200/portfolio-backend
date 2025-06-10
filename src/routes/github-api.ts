@@ -89,13 +89,17 @@ export default async function githubRoutes(
 
         const tokenData = await githubService.handleGitHubCallback(code);
 
-        logger.info(`Server is running on ${tokenData} tokenData`);
+        logger.info(
+          `Server is running on ${JSON.stringify(tokenData)} tokenData`
+        );
 
         const githubUser = await githubService.getGitHubUser(
           tokenData.access_token
         );
 
-        logger.info(`Server is running on ${githubUser} githubUser`);
+        logger.info(
+          `Server is running on ${JSON.stringify(githubUser)} githubUser`
+        );
 
         const userId = await githubService.saveOrUpdateUser(
           githubUser,
