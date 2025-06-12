@@ -5,7 +5,7 @@ import voteRoutes from "./routes/vote-api";
 import scrapeJob, { runScrapeJob, runAnalysisJob } from "./jobs/scrape-job";
 import cleanupJob from "./jobs/cleanup-job";
 import logger from "./utils/logger";
-import { testConnection } from "./config/supabase-client";
+import { testConnection, createTables } from "./config/supabase-client";
 import githubRoutes from "./routes/github-api";
 
 // 환경 변수 로드
@@ -81,6 +81,17 @@ const startServer = async (): Promise<void> => {
       logger.error(
         "Supabase connection test failed, but continuing server startup"
       );
+    }
+
+    // 데이터베이스 테이블 생성
+    logger.info("Initializing database tables...");
+    const tablesCreated = await createTables();
+    if (!tablesCreated) {
+      logger.error(
+        "Failed to create database tables, but continuing server startup"
+      );
+    } else {
+      logger.info("Database tables initialized successfully");
     }
 
     // 작업 스케줄러 시작

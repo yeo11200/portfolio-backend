@@ -14,6 +14,7 @@ export interface Repository {
   language: string;
   stargazers_count: number;
   forks_count: number;
+  branch_name?: string;
 }
 
 export interface RepositoryContent {
@@ -81,6 +82,34 @@ export const getUserRepositories = async (
 };
 
 /**
+ * 레포지토리의 기본 브랜치 감지
+ */
+export const getDefaultBranch = async (
+  accessToken: string,
+  owner: string,
+  repo: string
+): Promise<string> => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}`,
+      {
+        headers: {
+          Authorization: `token ${accessToken}`,
+        },
+      }
+    );
+
+    return response.data.default_branch || "main";
+  } catch (error) {
+    logger.error(
+      { error, owner, repo },
+      "Error fetching default branch, using 'main'"
+    );
+    return "main";
+  }
+};
+
+/**
  * 특정 레포지토리 정보 가져오기
  */
 export const getRepository = async (
@@ -111,22 +140,50 @@ export const getRepository = async (
 export const getRepositoryReadme = async (
   accessToken: string,
   owner: string,
-  repo: string
+  repo: string,
+  ref: string = "main"
 ): Promise<string> => {
   try {
     const response = await axios.get(
       `https://api.github.com/repos/${owner}/${repo}/readme`,
       {
+        params: { ref },
         headers: {
           Authorization: `token ${accessToken}`,
-          Accept: "application/vnd.github.v3.raw",
+          Accept: "application/vnd.github+json",
         },
       }
     );
 
-    return response.data;
+    if (response.data.content && response.data.encoding === "base64") {
+      // Base64 디코딩하여 실제 텍스트 내용 반환
+      return Buffer.from(response.data.content, "base64").toString("utf-8");
+    }
+
+    // encoding이 base64가 아닌 경우 (드물지만)
+    return response.data.content || "";
   } catch (error) {
-    logger.error({ error, owner, repo }, "Error fetching repository README");
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (ref === "main") {
+      logger.warn(
+        { owner, repo },
+        "README not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryReadme(accessToken, owner, repo, "master");
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo },
+          "Error fetching repository README from master branch"
+        );
+        return "";
+      }
+    }
+
+    logger.error(
+      { error, owner, repo, ref },
+      "Error fetching repository README"
+    );
     return "";
   }
 };
@@ -179,8 +236,31 @@ export const getRepositoryContents = async (
 
     return response.data;
   } catch (error) {
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (ref === "main") {
+      logger.warn(
+        { owner, repo, path },
+        "Contents not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryContents(
+          accessToken,
+          owner,
+          repo,
+          path,
+          "master"
+        );
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo, path },
+          "Error fetching repository contents from master branch"
+        );
+        throw new Error("Failed to fetch repository contents");
+      }
+    }
+
     logger.error(
-      { error, owner, repo, path },
+      { error, owner, repo, path, ref },
       "Error fetching repository contents"
     );
     throw new Error("Failed to fetch repository contents");
@@ -213,6 +293,29 @@ export const getRepositoryCommits = async (
 
     return response.data;
   } catch (error) {
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (branch === "main") {
+      logger.warn(
+        { owner, repo },
+        "Commits not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryCommits(
+          accessToken,
+          owner,
+          repo,
+          "master",
+          perPage
+        );
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo },
+          "Error fetching repository commits from master branch"
+        );
+        throw new Error("Failed to fetch repository commits");
+      }
+    }
+
     logger.error(
       { error, owner, repo, branch },
       "Error fetching repository commits"
@@ -276,6 +379,7 @@ export const saveRepository = async (
           language: repo.language,
           stars_count: repo.stargazers_count,
           forks_count: repo.forks_count,
+          branch_name: repo.branch_name,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "user_id,github_repo_id" }
@@ -302,13 +406,15 @@ export const getSavedRepositories = async (
   userId: string,
   sort: string = "updated_at",
   direction: string = "desc",
-  search: string = ""
+  search: string = "",
+  branchName?: string
 ): Promise<any[]> => {
   try {
     let query = supabaseClient
       .from("repositories")
       .select("*")
       .eq("user_id", userId)
+      .eq("branch_name", branchName)
       .order(sort, { ascending: direction === "asc" });
 
     if (search) {
@@ -413,4 +519,5 @@ export default {
   getSavedRepositories,
   saveCommitHistory,
   savePullRequests,
+  getDefaultBranch,
 };
