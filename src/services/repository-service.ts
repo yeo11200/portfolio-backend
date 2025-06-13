@@ -382,7 +382,7 @@ export const saveRepository = async (
           branch_name: repo.branch_name,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "user_id,github_repo_id" }
+        { onConflict: "user_id,github_repo_id,branch_name" }
       )
       .select("id")
       .single();

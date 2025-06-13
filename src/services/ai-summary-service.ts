@@ -3,6 +3,7 @@ import OpenAI from "openai";
 import supabaseClient from "../config/supabase-client";
 import logger from "../utils/logger";
 import dotenv from "dotenv";
+import { Repository } from "./repository-service";
 
 dotenv.config();
 
@@ -1526,31 +1527,10 @@ const processSection = (
       }
       break;
     case "architecture":
-      // architecture 내용을 other 배열에 추가
-      const architectureContent = cleanContent;
-
-      if (!summary.tech_stack.other) {
-        summary.tech_stack.other = [];
-      }
-
-      // 내용을 의미있는 단위로 분리하여 배열에 추가
-      if (architectureContent.includes("- ")) {
-        // 불릿 포인트가 있으면 각각을 배열 요소로
-        const items = architectureContent
-          .split(/- /)
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0);
-        summary.tech_stack.other.push(...items);
-      } else if (architectureContent.includes("\n")) {
-        // 줄바꿈이 있으면 각 줄을 배열 요소로
-        const items = architectureContent
-          .split("\n")
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0);
-        summary.tech_stack.other.push(...items);
+      if (summary.tech_stack.other) {
+        summary.tech_stack.other.push(cleanContent);
       } else {
-        // 단일 텍스트면 그대로 추가
-        summary.tech_stack.other.push(architectureContent);
+        summary.tech_stack.other = [cleanContent];
       }
       break;
     case "refactoring_history":
@@ -1560,91 +1540,72 @@ const processSection = (
       summary.collaboration_flow = cleanContent;
       break;
     case "resume_bullets":
-      // 전체 텍스트를 더 스마트하게 분리
+      // 텍스트를 의미있는 단위로 분리
       let bullets: string[] = [];
 
-      // 1. 먼저 불릿 포인트 기호로 분리 시도
-      if (cleanContent.match(/[•\-\*]\s+/)) {
+      // 먼저 불릿 포인트 기호로 분리 시도
+      if (
+        cleanContent.includes("•") ||
+        cleanContent.includes("-") ||
+        cleanContent.includes("*")
+      ) {
         bullets = cleanContent
-          .split(/[•\-\*]\s+/)
+          .split(/[•\-\*]/)
           .map((bullet) => bullet.trim())
-          .filter((bullet) => bullet.length > 15);
+          .filter((bullet) => bullet.length > 10); // 너무 짧은 것은 제외
       }
-      // 2. 숫자 리스트로 분리 시도 (1., 2., 3. 등)
-      else if (cleanContent.match(/\d+\.\s+/)) {
-        bullets = cleanContent
-          .split(/\d+\.\s+/)
-          .map((bullet) => bullet.trim())
-          .filter((bullet) => bullet.length > 15);
-      }
-      // 3. 문단 단위로 분리 (더블 줄바꿈)
-      else if (cleanContent.includes("\n\n")) {
-        bullets = cleanContent
-          .split(/\n\n+/)
-          .map((bullet) => bullet.trim().replace(/\n/g, " "))
-          .filter((bullet) => bullet.length > 15);
-      }
-      // 4. 마지막 시도: 마침표 기준으로 의미있는 문장들 그룹화
+      // 불릿 포인트가 없으면 문장 단위로 분리
       else {
-        const sentences = cleanContent
-          .split(/[.!?]/)
-          .map((s) => s.trim())
-          .filter((s) => s.length > 10);
+        // 콜론(:)을 기준으로 주요 섹션 분리
+        const sections = cleanContent
+          .split(/:\s*/)
+          .filter((section) => section.trim().length > 0);
 
-        // 2-3개 문장씩 그룹화
-        bullets = [];
-        for (let i = 0; i < sentences.length; i += 2) {
-          const group = sentences.slice(i, i + 2).join(". ");
-          if (group.length > 15) {
-            bullets.push(group);
+        if (sections.length > 1) {
+          // 콜론으로 분리된 섹션들을 처리
+          for (let i = 0; i < sections.length - 1; i++) {
+            const title =
+              sections[i].split(/[.!?]/).pop()?.trim() || sections[i].trim();
+            const content =
+              sections[i + 1].split(/[.!?]/)[0]?.trim() ||
+              sections[i + 1].trim();
+
+            if (title && content && title.length > 3 && content.length > 3) {
+              bullets.push(`${title}: ${content}`);
+            }
           }
+        } else {
+          // 마침표나 느낌표로 문장 분리
+          bullets = cleanContent
+            .split(/[.!?]/)
+            .map((sentence) => sentence.trim())
+            .filter((sentence) => sentence.length > 20); // 의미있는 길이의 문장만
         }
       }
 
-      // bullets가 비어있으면 전체 텍스트를 3-4개 부분으로 나누기
+      // bullets가 여전히 비어있으면 전체 텍스트를 하나의 bullet으로
       if (bullets.length === 0) {
-        const words = cleanContent.split(" ");
-        const chunkSize = Math.ceil(words.length / 3);
-
-        for (let i = 0; i < words.length; i += chunkSize) {
-          const chunk = words.slice(i, i + chunkSize).join(" ");
-          if (chunk.trim().length > 15) {
-            bullets.push(chunk.trim());
-          }
-        }
+        bullets = [cleanContent];
       }
-
-      // 최대 6개로 제한
-      bullets = bullets.slice(0, 6);
 
       summary.resume_bullets = bullets.map((bullet, index) => {
-        // 콜론이 있으면 콜론 기준으로 분리
-        if (bullet.includes(":") && bullet.indexOf(":") < bullet.length * 0.6) {
-          const colonIndex = bullet.indexOf(":");
-          const title = bullet.substring(0, colonIndex).trim();
-          const content = bullet.substring(colonIndex + 1).trim();
-
+        // 콜론이 있으면 콜론 앞을 title로, 뒤를 content로
+        if (bullet.includes(":")) {
+          const [title, ...contentParts] = bullet.split(":");
           return {
-            title: title || `성과 ${index + 1}`,
-            content: content || bullet,
+            title: title.trim() || `성과 ${index + 1}`,
+            content: contentParts.join(":").trim() || title.trim(),
           };
         }
-        // 콜론이 없거나 너무 뒤에 있으면 첫 부분을 title로
+        // 콜론이 없으면 첫 번째 문장을 title로, 나머지를 content로
         else {
-          const words = bullet.split(" ");
-          const titleWords = words.slice(
-            0,
-            Math.min(8, Math.ceil(words.length * 0.3))
-          );
-          const contentWords = words.slice(titleWords.length);
-
-          const title = titleWords.join(" ");
-          const content =
-            contentWords.length > 0 ? contentWords.join(" ") : bullet;
+          const sentences = bullet.split(/[.!?]/).filter((s) => s.trim());
+          const title = sentences[0]?.trim() || `성과 ${index + 1}`;
+          const content = sentences.slice(1).join(". ").trim() || bullet.trim();
 
           return {
-            title: title.length > 3 ? title : `성과 ${index + 1}`,
-            content: content,
+            title: title.length > 80 ? title.substring(0, 80) : title,
+            content: content || bullet.trim(),
           };
         }
       });
@@ -1662,6 +1623,165 @@ const processSection = (
   }
 };
 
+/**
+ * 사용자별 저장된 레포지토리 요약 개수 조회
+ */
+export const getUserRepositorySummaryCounts = async (
+  user_id: string
+): Promise<{ user_id: string; count: number }> => {
+  try {
+    const { count, error } = await supabaseClient
+      .from("repository_summaries")
+      .select("*, repositories!inner(user_id)", { count: "exact", head: true })
+      .eq("repositories.user_id", user_id);
+
+    if (error) {
+      logger.error({ error }, "Error fetching repository summary counts");
+      throw error;
+    }
+
+    return { user_id, count: count || 0 };
+  } catch (error) {
+    logger.error(
+      { error },
+      "Exception when fetching repository summary counts"
+    );
+    return { user_id, count: 0 };
+  }
+};
+
+/**
+ * 사용자별 이번 달 저장된 레포지토리 요약 개수 조회
+ */
+export const getUserMonthlyRepositorySummaryCounts = async (
+  user_id: string
+): Promise<{ user_id: string; count: number }> => {
+  try {
+    const { count, error } = await supabaseClient
+      .from("repository_summaries")
+      .select("*, repositories!inner(user_id)", { count: "exact", head: true })
+      .eq("repositories.user_id", user_id)
+      .gte(
+        "created_at",
+        new Date(
+          new Date().getFullYear(),
+          new Date().getMonth(),
+          1
+        ).toISOString()
+      )
+      .lt(
+        "created_at",
+        new Date(
+          new Date().getFullYear(),
+          new Date().getMonth() + 1,
+          1
+        ).toISOString()
+      );
+
+    if (error) {
+      logger.error(
+        { error },
+        "Error fetching monthly repository summary counts"
+      );
+      throw error;
+    }
+
+    return { user_id, count: count || 0 };
+  } catch (error) {
+    logger.error(
+      { error },
+      "Exception when fetching monthly repository summary counts"
+    );
+    return { user_id, count: 0 };
+  }
+};
+
+export const getUserRepositorySummary = async (
+  user_id: string
+): Promise<
+  | {
+      name: string;
+      language: string;
+      owner: string;
+      updated_at: string;
+      description: string;
+    }[]
+  | undefined
+> => {
+  try {
+    const { data, error } = await supabaseClient
+      .from("repositories")
+      .select("name, language, owner, updated_at, description, created_at")
+      .eq("user_id", user_id)
+      .limit(3)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      logger.error({ error }, "Error fetching repository summary");
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    logger.error({ error }, "Error fetching repository summary");
+    throw error;
+  }
+};
+
+/**
+ * 사용자별 고유 GitHub 레포지토리 요약 개수 조회 (직접 SQL 쿼리)
+ */
+export const getUserUniqueRepoSummaryCounts = async (
+  user_id: string
+): Promise<
+  | {
+      user_id: string;
+      summary_count: number;
+    }
+  | undefined
+> => {
+  try {
+    // Supabase에서 직접 조인 쿼리 실행
+    const { data, error } = await supabaseClient
+      .from("repository_summaries")
+      .select(
+        `
+        repositories!inner(
+          user_id,
+          github_repo_id
+        )
+      `
+      )
+      .eq("repositories.user_id", user_id);
+
+    if (error) {
+      logger.error(
+        { error },
+        "Error executing query for user repo summary counts"
+      );
+      return undefined;
+    }
+
+    if (!data || data.length === 0) {
+      return { user_id, summary_count: 0 };
+    }
+
+    // COUNT(DISTINCT github_repo_id) 처리
+    const uniqueRepoIds = new Set<number>();
+    data.forEach((item: any) => {
+      uniqueRepoIds.add(item.repositories.github_repo_id);
+    });
+
+    return {
+      user_id,
+      summary_count: uniqueRepoIds.size,
+    };
+  } catch (error) {
+    logger.error({ error }, "Exception in getUserUniqueRepoSummaryCounts");
+    return undefined;
+  }
+};
+
 export default {
   generateRepositorySummary,
   saveRepositorySummary,
@@ -1671,4 +1791,8 @@ export default {
   exportSummaryAsMarkdown,
   exportSummaryAsNotionBlocks,
   generateEnhancedRepositorySummary,
+  getUserRepositorySummaryCounts,
+  getUserMonthlyRepositorySummaryCounts,
+  getUserRepositorySummary,
+  getUserUniqueRepoSummaryCounts,
 };
