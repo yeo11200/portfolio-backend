@@ -47,7 +47,7 @@ export interface PullRequest {
 }
 
 /**
- * 사용자의 GitHub 레포지토리 목록 가져오기
+ * 사용자의 GitHub 레포지토리 목록 가져오기 (참여한 모든 레포지토리 포함)
  */
 export const getUserRepositories = async (
   accessToken: string,
@@ -56,27 +56,36 @@ export const getUserRepositories = async (
   search: string = ""
 ): Promise<Repository[]> => {
   try {
-    let url = "https://api.github.com/user/repos";
     const params: Record<string, string> = {
       sort,
       direction,
       per_page: "100",
+      // 소유한 레포지토리 + 협업하는 레포지토리 + 조직 레포지토리 모두 포함
+      affiliation: "owner,collaborator,organization_member",
     };
 
+    // 검색어가 있으면 GitHub Search API 사용
+    let url = "https://api.github.com/user/repos";
     if (search) {
-      params.q = search;
+      url = "https://api.github.com/search/repositories";
+      params.q = `${search} user:@me`;
+      delete params.affiliation; // Search API에서는 affiliation 파라미터 사용 불가
     }
 
     const response = await axios.get(url, {
       params,
       headers: {
         Authorization: `token ${accessToken}`,
+        Accept: "application/vnd.github.v3+json",
       },
     });
 
-    return response.data;
+    // Search API 사용시 response.data.items, 일반 API 사용시 response.data
+    const repositories = search ? response.data.items : response.data;
+
+    return repositories;
   } catch (error) {
-    logger.error({ error }, "Error fetching user repositories");
+    logger.error({ error, search }, "Error fetching user repositories");
     throw new Error("Failed to fetch user repositories");
   }
 };
