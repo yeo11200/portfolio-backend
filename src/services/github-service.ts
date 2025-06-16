@@ -31,7 +31,7 @@ export interface GitHubToken {
  * GitHub OAuth 인증 URL 생성
  */
 export const getGitHubAuthUrl = (): string => {
-  const scope = "read:user repo";
+  const scope = "read:user repo read:org";
   return `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${GITHUB_CALLBACK_URL}&scope=${scope}`;
 };
 
@@ -956,6 +956,63 @@ export const getUserCreatedAt = async (
   }
 };
 
+/**
+ * 사용자의 모든 repository 목록 가져오기 (public + private)
+ */
+export const getUserRepositories = async (
+  accessToken: string,
+  page: number = 1,
+  perPage: number = 30
+): Promise<any[]> => {
+  try {
+    const response = await axios.get("https://api.github.com/user/repos", {
+      headers: {
+        Authorization: `token ${accessToken}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+      params: {
+        visibility: "all", // public, private, all
+        affiliation: "owner,collaborator,organization_member",
+        sort: "updated",
+        direction: "desc",
+        page,
+        per_page: perPage,
+      },
+    });
+
+    return response.data;
+  } catch (error) {
+    logger.error({ error }, "Error getting user repositories");
+    throw new Error("Failed to get user repositories");
+  }
+};
+
+/**
+ * 특정 private repository 정보 가져오기 (테스트용)
+ */
+export const getPrivateRepository = async (
+  accessToken: string,
+  owner: string,
+  repo: string
+): Promise<any> => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}`,
+      {
+        headers: {
+          Authorization: `token ${accessToken}`,
+          Accept: "application/vnd.github.v3+json",
+        },
+      }
+    );
+
+    return response.data;
+  } catch (error) {
+    logger.error({ error, owner, repo }, "Error getting private repository");
+    throw new Error("Failed to get private repository");
+  }
+};
+
 export default {
   getGitHubAuthUrl,
   handleGitHubCallback,
@@ -972,4 +1029,6 @@ export default {
   analyzeBranchLanguages,
   getBranchFileAnalysis,
   getUserCreatedAt,
+  getUserRepositories,
+  getPrivateRepository,
 };
