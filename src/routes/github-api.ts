@@ -567,22 +567,158 @@ export default async function githubRoutes(
         );
 
         // 중요 파일들 가져오기
-        let importantFiles = {};
+        let importantFiles: { [key: string]: string } = {};
         if (treeResult && Array.isArray(treeResult)) {
           try {
-            importantFiles = await githubService.getImportantFiles(
-              user.access_token,
-              owner,
-              repo,
-              treeResult,
-              defaultBranch
-            );
+            const totalFiles = treeResult.filter(
+              (item) => item.type === "blob"
+            ).length;
+
+            // 파일이 50개 이하면 모든 파일을 분석, 그 이상이면 중요한 파일만 분석
+            if (totalFiles <= 50) {
+              logger.info(
+                { totalFiles },
+                "Small repository detected - analyzing all relevant files"
+              );
+
+              // 분석할 파일 필터링 (바이너리, 불필요한 파일 제외)
+              const relevantFiles = treeResult.filter((item) => {
+                if (item.type !== "blob") return false;
+
+                const path = item.path.toLowerCase();
+
+                // 제외할 파일/폴더 패턴
+                const excludePatterns = [
+                  /node_modules\//,
+                  /\.git\//,
+                  /dist\//,
+                  /build\//,
+                  /coverage\//,
+                  /\.next\//,
+                  /\.nuxt\//,
+                  /vendor\//,
+                  /target\//,
+                  /\.vscode\//,
+                  /\.idea\//,
+                ];
+
+                // 제외할 파일 확장자 (바이너리, 이미지 등)
+                const excludeExtensions = [
+                  "jpg",
+                  "jpeg",
+                  "png",
+                  "gif",
+                  "bmp",
+                  "svg",
+                  "ico",
+                  "webp",
+                  "pdf",
+                  "zip",
+                  "tar",
+                  "gz",
+                  "rar",
+                  "7z",
+                  "exe",
+                  "dll",
+                  "so",
+                  "dylib",
+                  "bin",
+                  "dat",
+                  "mp4",
+                  "avi",
+                  "mov",
+                  "mp3",
+                  "wav",
+                  "ttf",
+                  "woff",
+                  "woff2",
+                  "eot",
+                  "lock", // package-lock.json, yarn.lock 등은 너무 크므로 제외
+                ];
+
+                // 폴더 패턴 체크
+                if (excludePatterns.some((pattern) => pattern.test(path))) {
+                  return false;
+                }
+
+                // 확장자 체크
+                const extension = path.split(".").pop();
+                if (extension && excludeExtensions.includes(extension)) {
+                  return false;
+                }
+
+                return true;
+              });
+
+              // 파일 크기 제한을 위해 병렬로 처리하되 배치로 나누어 처리
+              const batchSize = 10; // 한 번에 10개씩 처리
+              const batches = [];
+
+              for (let i = 0; i < relevantFiles.length; i += batchSize) {
+                batches.push(relevantFiles.slice(i, i + batchSize));
+              }
+
+              for (const batch of batches) {
+                const batchPromises = batch.map(async (file) => {
+                  try {
+                    const content = await githubService.getFileContent(
+                      user.access_token,
+                      owner,
+                      repo,
+                      file.path,
+                      defaultBranch
+                    );
+
+                    // 파일 크기 제한 (100KB 이하만)
+                    if (content && content.length < 100000) {
+                      return { path: file.path, content };
+                    }
+                    return null;
+                  } catch (error) {
+                    logger.warn(
+                      { error, path: file.path },
+                      "Failed to fetch file content"
+                    );
+                    return null;
+                  }
+                });
+
+                const batchResults = await Promise.all(batchPromises);
+                batchResults.forEach((result) => {
+                  if (result) {
+                    importantFiles[result.path] = result.content;
+                  }
+                });
+
+                // 배치 간 짧은 대기 (API 제한 방지)
+                if (batches.indexOf(batch) < batches.length - 1) {
+                  await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+              }
+            } else {
+              // 기존 방식: 중요한 파일들만 가져오기
+              importantFiles = await githubService.getImportantFiles(
+                user.access_token,
+                owner,
+                repo,
+                treeResult,
+                defaultBranch
+              );
+            }
+
             logger.info(
-              { fileCount: Object.keys(importantFiles).length },
-              "Important files fetched"
+              {
+                fileCount: Object.keys(importantFiles).length,
+                totalFiles,
+                analysisMode:
+                  totalFiles <= 50
+                    ? "all_relevant_files"
+                    : "important_files_only",
+              },
+              "Files fetched for analysis"
             );
           } catch (error) {
-            logger.error({ error }, "Failed to fetch important files");
+            logger.error({ error }, "Failed to fetch files");
           }
         }
 

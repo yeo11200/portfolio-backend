@@ -924,6 +924,38 @@ export const getBranchFileAnalysis = async (
   }
 };
 
+/**
+ * 사용자별 생성일 조회
+ */
+export const getUserCreatedAt = async (
+  user_id: string
+): Promise<{ user_id: string; data: { created_at: string } }> => {
+  try {
+    const { data, error } = await supabaseClient
+      .from("users")
+      .select("created_at")
+      .eq("id", user_id)
+      .single();
+
+    console.log(data, error);
+    if (error) {
+      logger.error(
+        { error },
+        "Error fetching monthly repository summary counts"
+      );
+      throw error;
+    }
+
+    return { user_id, data };
+  } catch (error) {
+    logger.error(
+      { error },
+      "Exception when fetching monthly repository summary counts"
+    );
+    return { user_id, data: { created_at: "" } };
+  }
+};
+
 export default {
   getGitHubAuthUrl,
   handleGitHubCallback,
@@ -939,4 +971,5 @@ export default {
   getRepositoryLanguages,
   analyzeBranchLanguages,
   getBranchFileAnalysis,
+  getUserCreatedAt,
 };

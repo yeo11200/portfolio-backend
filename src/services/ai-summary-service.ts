@@ -1714,7 +1714,7 @@ export const getUserRepositorySummary = async (
       .select("name, language, owner, updated_at, description, created_at")
       .eq("user_id", user_id)
       .limit(3)
-      .order("created_at", { ascending: false });
+      .order("updated_at", { ascending: false });
 
     if (error) {
       logger.error({ error }, "Error fetching repository summary");
