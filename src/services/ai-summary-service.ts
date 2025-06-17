@@ -1154,10 +1154,20 @@ PR 설명: ${prDescriptions}
 폴더 구조와 프로젝트 타입(프론트엔드 전용/풀스택/API 서버)을 설명하세요.
 
 ## 5. 개발 과정 및 리팩토링
-커밋 메시지를 분석하여 주요 개발 과정과 개선 사항을 설명하세요.
+다음 정보를 종합하여 개발 과정을 분석하세요:
+- 프로젝트 구조에서 보이는 개발 단계 (폴더 구성, 파일 분리 정도)
+- 설정 파일들이 보여주는 기술 선택과 발전 과정
+- 코드 구성 방식에서 추론되는 아키텍처 발전
+- 커밋 메시지가 있다면 주요 개발 마일스톤
+- 파일 확장자와 구조로 보이는 기술 스택 진화
 
 ## 6. 협업 및 개발 프로세스
-개발 패턴과 프로세스를 분석하여 설명하세요.
+다음을 종합하여 개발 프로세스를 분석하세요:
+- 프로젝트 규모와 복잡도로 추론되는 개발 방식 (개인/팀 프로젝트)
+- 설정 파일들이 보여주는 개발 환경과 도구 사용
+- 코드 구조의 체계성과 모듈화 수준
+- PR과 커밋 패턴이 있다면 협업 스타일 분석
+- 테스트나 CI/CD 설정 파일 존재 여부
 
 ## 7. 이력서용 성과 요약
 다음 4가지 성과를 각각 1-2문장으로 작성하세요:
@@ -1199,8 +1209,8 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
           content: prompt,
         },
       ],
-      temperature: 0.7,
-      max_tokens: 3000,
+      temperature: 0.9,
+      max_tokens: 4000,
     });
 
     logger.info(`${JSON.stringify(completion)} completion`);
@@ -1399,11 +1409,18 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
 
         summary.refactoring_history = commitMessages
           ? `주요 커밋 내역: ${commitMessages.substring(0, 200)}...`
-          : "개발 과정 분석 필요";
+          : `프로젝트 구조 분석: ${projectStructure.substring(
+              0,
+              200
+            )}... 설정 파일 기반 개발 과정 추론 가능`;
 
         summary.collaboration_flow = prDescriptions
           ? `PR 분석: ${prDescriptions.substring(0, 200)}...`
-          : "개인 프로젝트로 추정";
+          : `프로젝트 규모와 구조를 통해 ${
+              techStackFromFiles.detected.length > 3
+                ? "체계적인 개발 프로세스"
+                : "개인 프로젝트 스타일"
+            }로 추정`;
 
         summary.resume_bullets = [
           {
@@ -1448,12 +1465,29 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
             ? [techStackFromFiles.detected.join(", ")]
             : ["기술 스택 분석 필요"],
       };
-      summary.refactoring_history = "상세 분석이 필요합니다.";
-      summary.collaboration_flow = "협업 프로세스 분석이 필요합니다.";
+      summary.refactoring_history = commitMessages
+        ? `커밋 기반 분석: ${commitMessages.substring(0, 200)}...`
+        : `구조 기반 분석: ${projectStructure.substring(
+            0,
+            200
+          )}... 파일 구성을 통한 개발 과정 추론`;
+      summary.collaboration_flow = prDescriptions
+        ? `PR 기반 분석: ${prDescriptions.substring(0, 200)}...`
+        : `프로젝트 특성 분석: ${
+            techStackFromFiles.detected.length > 2
+              ? "다양한 기술 활용으로 체계적 개발"
+              : "집중적 기술 스택 활용"
+          }`;
       summary.resume_bullets = [
         {
-          title: "프로젝트 기본 분석 완료",
-          content: "프로젝트에 대한 기본적인 분석이 완료되었습니다.",
+          title: "프로젝트 아키텍처 설계",
+          content: `${repoName} 프로젝트의 구조적 설계와 기술 선택을 담당했습니다.`,
+        },
+        {
+          title: "기술 스택 구현",
+          content: `${
+            techStackFromFiles.detected.slice(0, 3).join(", ") || "다양한 기술"
+          }을 활용하여 프로젝트를 구현했습니다.`,
         },
       ];
     }
