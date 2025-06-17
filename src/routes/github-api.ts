@@ -566,7 +566,7 @@ export default async function githubRoutes(
           }
         );
 
-        // 중요 파일들 가져오기
+        // 중요 파일들 가져오기 (모든 소스 코드 파일 분석)
         let importantFiles: { [key: string]: string } = {};
         if (treeResult && Array.isArray(treeResult)) {
           try {
@@ -574,148 +574,357 @@ export default async function githubRoutes(
               (item) => item.type === "blob"
             ).length;
 
-            // 파일이 50개 이하면 모든 파일을 분석, 그 이상이면 중요한 파일만 분석
-            if (totalFiles <= 50) {
-              logger.info(
-                { totalFiles },
-                "Small repository detected - analyzing all relevant files"
-              );
+            logger.info(
+              { totalFiles },
+              "Analyzing all source code files (excluding libraries and media)"
+            );
 
-              // 분석할 파일 필터링 (바이너리, 불필요한 파일 제외)
-              const relevantFiles = treeResult.filter((item) => {
-                if (item.type !== "blob") return false;
+            // 분석할 파일 필터링 (라이브러리, 미디어, 불필요한 파일 제외)
+            const relevantFiles = treeResult.filter((item) => {
+              if (item.type !== "blob") return false;
 
-                const path = item.path.toLowerCase();
+              const path = item.path.toLowerCase();
 
-                // 제외할 파일/폴더 패턴
-                const excludePatterns = [
-                  /node_modules\//,
-                  /\.git\//,
-                  /dist\//,
-                  /build\//,
-                  /coverage\//,
-                  /\.next\//,
-                  /\.nuxt\//,
-                  /vendor\//,
-                  /target\//,
-                  /\.vscode\//,
-                  /\.idea\//,
-                ];
+              // 제외할 라이브러리/패키지 폴더 패턴 (각 언어별)
+              const excludeLibraryPatterns = [
+                // JavaScript/Node.js
+                /node_modules\//,
+                /\.npm\//,
+                /\.yarn\//,
+                /bower_components\//,
 
-                // 제외할 파일 확장자 (바이너리, 이미지 등)
-                const excludeExtensions = [
-                  "jpg",
-                  "jpeg",
-                  "png",
-                  "gif",
-                  "bmp",
-                  "svg",
-                  "ico",
-                  "webp",
-                  "pdf",
-                  "zip",
-                  "tar",
-                  "gz",
-                  "rar",
-                  "7z",
-                  "exe",
-                  "dll",
-                  "so",
-                  "dylib",
-                  "bin",
-                  "dat",
-                  "mp4",
-                  "avi",
-                  "mov",
-                  "mp3",
-                  "wav",
-                  "ttf",
-                  "woff",
-                  "woff2",
-                  "eot",
-                  "lock", // package-lock.json, yarn.lock 등은 너무 크므로 제외
-                ];
+                // Python
+                /venv\//,
+                /env\//,
+                /\.venv\//,
+                /\.env\//,
+                /__pycache__\//,
+                /\.pytest_cache\//,
+                /site-packages\//,
+                /dist-packages\//,
+                /\.tox\//,
 
-                // 폴더 패턴 체크
-                if (excludePatterns.some((pattern) => pattern.test(path))) {
-                  return false;
+                // Java/Kotlin/Scala
+                /target\//,
+                /\.gradle\//,
+                /gradle\//,
+                /\.m2\//,
+                /build\//,
+                /out\//,
+                /classes\//,
+
+                // .NET/C#
+                /bin\//,
+                /obj\//,
+                /packages\//,
+                /\.nuget\//,
+
+                // Ruby
+                /vendor\//,
+                /\.bundle\//,
+                /gems\//,
+
+                // PHP
+                /vendor\//,
+                /composer\//,
+
+                // Go
+                /vendor\//,
+                /\.mod\//,
+
+                // Rust
+                /target\//,
+                /\.cargo\//,
+
+                // Swift
+                /\.build\//,
+                /packages\//,
+                /\.swiftpm\//,
+
+                // Flutter/Dart
+                /\.dart_tool\//,
+                /\.pub\//,
+                /build\//,
+
+                // iOS/macOS
+                /pods\//,
+                /\.cocoapods\//,
+                /carthage\//,
+                /derived_data\//,
+
+                // Android
+                /\.gradle\//,
+                /build\//,
+                /\.android\//,
+
+                // 빌드/배포 폴더
+                /dist\//,
+                /build\//,
+                /output\//,
+                /release\//,
+                /debug\//,
+                /coverage\//,
+                /\.next\//,
+                /\.nuxt\//,
+                /\.output\//,
+                /\.vercel\//,
+                /\.netlify\//,
+
+                // 캐시/임시 폴더
+                /\.cache\//,
+                /\.tmp\//,
+                /temp\//,
+                /tmp\//,
+                /\.temp\//,
+
+                // 버전 관리
+                /\.git\//,
+                /\.svn\//,
+                /\.hg\//,
+
+                // IDE/에디터 설정
+                /\.vscode\//,
+                /\.idea\//,
+                /\.eclipse\//,
+                /\.settings\//,
+                /\.project\//,
+                /\.classpath\//,
+
+                // 로그 파일
+                /logs\//,
+                /\.log\//,
+              ];
+
+              // 제외할 미디어/바이너리 파일 확장자
+              const excludeExtensions = [
+                // 이미지
+                "jpg",
+                "jpeg",
+                "png",
+                "gif",
+                "bmp",
+                "svg",
+                "ico",
+                "webp",
+                "tiff",
+                "tif",
+                "raw",
+                "psd",
+                "ai",
+                "eps",
+                "indd",
+                "sketch",
+
+                // 비디오
+                "mp4",
+                "avi",
+                "mov",
+                "wmv",
+                "flv",
+                "webm",
+                "mkv",
+                "m4v",
+                "3gp",
+                "mpg",
+                "mpeg",
+                "ogv",
+                "asf",
+                "rm",
+                "rmvb",
+
+                // 오디오
+                "mp3",
+                "wav",
+                "flac",
+                "aac",
+                "ogg",
+                "wma",
+                "m4a",
+                "opus",
+                "aiff",
+
+                // 폰트
+                "ttf",
+                "woff",
+                "woff2",
+                "eot",
+                "otf",
+                "fon",
+
+                // 압축 파일
+                "zip",
+                "rar",
+                "7z",
+                "tar",
+                "gz",
+                "bz2",
+                "xz",
+                "lz",
+                "lzma",
+                "cab",
+                "iso",
+                "dmg",
+                "pkg",
+                "deb",
+                "rpm",
+
+                // 실행 파일
+                "exe",
+                "dll",
+                "so",
+                "dylib",
+                "app",
+                "deb",
+                "rpm",
+                "msi",
+                "bin",
+                "dat",
+                "db",
+                "sqlite",
+                "sqlite3",
+
+                // 문서 (바이너리)
+                "pdf",
+                "doc",
+                "docx",
+                "xls",
+                "xlsx",
+                "ppt",
+                "pptx",
+                "odt",
+                "ods",
+                "odp",
+                "rtf",
+
+                // 기타 바이너리
+                "class",
+                "jar",
+                "war",
+                "ear",
+                "pyc",
+                "pyo",
+                "o",
+                "obj",
+                "lib",
+                "a",
+                "la",
+                "lo",
+                "slo",
+                "ko",
+                "mod",
+
+                // 패키지 락 파일 (너무 크므로 제외)
+                "lock", // package-lock.json, yarn.lock, Gemfile.lock 등
+              ];
+
+              // 라이브러리/패키지 폴더 패턴 체크
+              if (
+                excludeLibraryPatterns.some((pattern) => pattern.test(path))
+              ) {
+                return false;
+              }
+
+              // 확장자 체크
+              const extension = path.split(".").pop();
+              if (extension && excludeExtensions.includes(extension)) {
+                return false;
+              }
+
+              // 특정 파일명 제외 (대소문자 구분 없이)
+              const fileName = path.split("/").pop() || "";
+              const excludeFileNames = [
+                "package-lock.json",
+                "yarn.lock",
+                "composer.lock",
+                "gemfile.lock",
+                "pipfile.lock",
+                "poetry.lock",
+                "cargo.lock",
+                "go.sum",
+                ".ds_store",
+                "thumbs.db",
+                "desktop.ini",
+              ];
+
+              if (
+                excludeFileNames.some((name) =>
+                  fileName.toLowerCase().includes(name.toLowerCase())
+                )
+              ) {
+                return false;
+              }
+
+              return true;
+            });
+
+            logger.info(
+              {
+                totalFiles,
+                relevantFiles: relevantFiles.length,
+                filteredOut: totalFiles - relevantFiles.length,
+              },
+              "Files filtered for analysis"
+            );
+
+            // 파일 크기 제한을 위해 병렬로 처리하되 배치로 나누어 처리
+            const batchSize = 15; // 한 번에 15개씩 처리 (더 많은 파일 처리)
+            const batches = [];
+
+            for (let i = 0; i < relevantFiles.length; i += batchSize) {
+              batches.push(relevantFiles.slice(i, i + batchSize));
+            }
+
+            for (const batch of batches) {
+              const batchPromises = batch.map(async (file) => {
+                try {
+                  const content = await githubService.getFileContent(
+                    user.access_token,
+                    owner,
+                    repo,
+                    file.path,
+                    defaultBranch
+                  );
+
+                  // 파일 크기 제한 (200KB 이하만 - 더 큰 파일도 허용)
+                  if (content && content.length < 200000) {
+                    return { path: file.path, content };
+                  } else if (content) {
+                    logger.warn(
+                      { path: file.path, size: content.length },
+                      "File too large, skipping"
+                    );
+                  }
+                  return null;
+                } catch (error) {
+                  logger.warn(
+                    { error, path: file.path },
+                    "Failed to fetch file content"
+                  );
+                  return null;
                 }
-
-                // 확장자 체크
-                const extension = path.split(".").pop();
-                if (extension && excludeExtensions.includes(extension)) {
-                  return false;
-                }
-
-                return true;
               });
 
-              // 파일 크기 제한을 위해 병렬로 처리하되 배치로 나누어 처리
-              const batchSize = 10; // 한 번에 10개씩 처리
-              const batches = [];
-
-              for (let i = 0; i < relevantFiles.length; i += batchSize) {
-                batches.push(relevantFiles.slice(i, i + batchSize));
-              }
-
-              for (const batch of batches) {
-                const batchPromises = batch.map(async (file) => {
-                  try {
-                    const content = await githubService.getFileContent(
-                      user.access_token,
-                      owner,
-                      repo,
-                      file.path,
-                      defaultBranch
-                    );
-
-                    // 파일 크기 제한 (100KB 이하만)
-                    if (content && content.length < 100000) {
-                      return { path: file.path, content };
-                    }
-                    return null;
-                  } catch (error) {
-                    logger.warn(
-                      { error, path: file.path },
-                      "Failed to fetch file content"
-                    );
-                    return null;
-                  }
-                });
-
-                const batchResults = await Promise.all(batchPromises);
-                batchResults.forEach((result) => {
-                  if (result) {
-                    importantFiles[result.path] = result.content;
-                  }
-                });
-
-                // 배치 간 짧은 대기 (API 제한 방지)
-                if (batches.indexOf(batch) < batches.length - 1) {
-                  await new Promise((resolve) => setTimeout(resolve, 100));
+              const batchResults = await Promise.all(batchPromises);
+              batchResults.forEach((result) => {
+                if (result) {
+                  importantFiles[result.path] = result.content;
                 }
+              });
+
+              // 배치 간 짧은 대기 (API 제한 방지)
+              if (batches.indexOf(batch) < batches.length - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 50)); // 대기 시간 단축
               }
-            } else {
-              // 기존 방식: 중요한 파일들만 가져오기
-              importantFiles = await githubService.getImportantFiles(
-                user.access_token,
-                owner,
-                repo,
-                treeResult,
-                defaultBranch
-              );
             }
 
             logger.info(
               {
                 fileCount: Object.keys(importantFiles).length,
                 totalFiles,
-                analysisMode:
-                  totalFiles <= 50
-                    ? "all_relevant_files"
-                    : "important_files_only",
+                relevantFiles: relevantFiles.length,
+                analysisMode: "all_source_files",
               },
-              "Files fetched for analysis"
+              "Source files fetched for analysis"
             );
           } catch (error) {
             logger.error({ error }, "Failed to fetch files");

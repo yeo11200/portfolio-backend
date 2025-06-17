@@ -100,8 +100,15 @@ export const generateRepositorySummary = async (
       messages: [
         {
           role: "system",
-          content:
-            "당신은 GitHub 레포지토리를 분석하고 요약하는 전문가입니다. 주어진 정보를 바탕으로 명확하고 간결한 요약을 제공해주세요.",
+          content: `당신은 GitHub 레포지토리를 분석하는 전문가입니다. 
+          주어진 정보를 바탕으로 정확하고 구조화된 분석 보고서를 작성해주세요.
+          
+          중요한 규칙:
+          1. 제공된 형식을 정확히 따라주세요 (## 1. 프로젝트 소개, ## 2. 사용 언어 등)
+          2. 실제 데이터에만 기반하여 작성하고, 추측하지 마세요
+          3. 각 섹션을 완전히 작성한 후 다음 섹션으로 넘어가세요
+          4. 이력서용 성과는 ### 성과 1:, ### 성과 2: 형식으로 작성하세요
+          5. 간결하고 명확하게 작성하세요`,
         },
         {
           role: "user",
@@ -773,16 +780,30 @@ const determineProjectType = (
     fileExtensions.has("jsx") ||
     fileExtensions.has("tsx") ||
     fileExtensions.has("vue") ||
-    fileExtensions.has("html");
+    fileExtensions.has("html") ||
+    fileExtensions.has("css") ||
+    fileExtensions.has("scss") ||
+    fileExtensions.has("sass");
+
+  // 백엔드 판단을 더 엄격하게 - 실제 서버 관련 파일이 있는지 확인
+  const hasBackendFiles = Array.from(configFiles).some(
+    (file) =>
+      file.toLowerCase().includes("server") ||
+      file.toLowerCase().includes("api") ||
+      file.toLowerCase().includes("express") ||
+      file.toLowerCase().includes("fastify") ||
+      file.toLowerCase().includes("koa")
+  );
 
   const hasBackend =
     backendIndicators.size > 0 ||
-    fileExtensions.has("js") ||
-    fileExtensions.has("ts") ||
+    hasBackendFiles ||
     fileExtensions.has("py") ||
     fileExtensions.has("go") ||
     fileExtensions.has("java") ||
-    fileExtensions.has("rs");
+    fileExtensions.has("rs") ||
+    fileExtensions.has("php") ||
+    fileExtensions.has("rb");
 
   const hasPackageJson = Array.from(configFiles).some((file) =>
     file.includes("package.json")
@@ -794,9 +815,22 @@ const determineProjectType = (
     file.includes("go.mod")
   );
 
+  // Vite, Webpack 등 프론트엔드 빌드 도구 감지
+  const hasFrontendBuildTools = Array.from(configFiles).some(
+    (file) =>
+      file.includes("vite.config") ||
+      file.includes("webpack.config") ||
+      file.includes("next.config") ||
+      file.includes("nuxt.config") ||
+      file.includes("vue.config")
+  );
+
   if (hasFrontend && hasBackend) {
     return "풀스택 웹 애플리케이션";
   } else if (hasFrontend && !hasBackend) {
+    if (hasFrontendBuildTools) {
+      return "프론트엔드 SPA (Single Page Application)";
+    }
     return "프론트엔드 전용 애플리케이션";
   } else if (!hasFrontend && hasBackend) {
     if (hasPackageJson) return "Node.js 백엔드 API";
@@ -912,7 +946,7 @@ const analyzeTechStackFromFiles = (files: {
 
           // 개발 도구
           if (dep.includes("typescript")) {
-            techStack.backend.push("TypeScript");
+            // TypeScript는 언어이므로 기술 스택에서 제외
             techStack.detected.push("TypeScript");
           }
 
@@ -1058,92 +1092,89 @@ export const generateEnhancedRepositorySummary = async (
     logger.info(`${prDescriptions} prDescriptions`);
 
     const prompt = `
-      다음은 GitHub 레포지토리 "${repoName}"에 대한 상세 분석 정보입니다:
-      
-      README:
-      ${readme}
-      
-      프로젝트 구조:
-      ${projectStructure}
-      
-      언어 통계:
-      ${languageStats}
-      
-      실제 감지된 기술 스택:
-      - 전체: ${techStackFromFiles.detected.join(", ") || "없음"}
-      - 프론트엔드: ${techStackFromFiles.frontend.join(", ") || "없음"}
-      - 백엔드: ${techStackFromFiles.backend.join(", ") || "없음"}
-      - 데이터베이스: ${techStackFromFiles.database.join(", ") || "없음"}
-      - DevOps: ${techStackFromFiles.devops.join(", ") || "없음"}
-      - 테스팅: ${techStackFromFiles.testing.join(", ") || "없음"}
-      
-      주요 설정 파일들:
-      ${configFiles}
-      
-      최근 커밋 메시지:
-      ${commitMessages}
-      
-      최근 PR 설명:
-      ${prDescriptions}
-      
-      **중요 지침:**
-      - 위에서 "실제 감지된 기술 스택"에 나열된 기술만 사용하세요
-      - 프론트엔드 기술이 "없음"으로 표시되면 프론트엔드 관련 내용을 포함하지 마세요
-      - 백엔드 기술이 "없음"으로 표시되면 백엔드 관련 내용을 포함하지 마세요
-      - 실제로 존재하지 않는 기술을 추측하거나 가정하지 마세요
-      
-      위 정보를 바탕으로 다음 주제에 대해 **실제 감지된 기술만을 사용하여** 요약해주세요:
-      
-      1. 프로젝트 소개: 이 프로젝트가 무엇인지, 어떤 문제를 해결하는지, 주요 기능은 무엇인지 설명해주세요.
-      
-      2. 기술 스택: 
-         **오직 위에서 감지된 기술만 언급하세요:**
-         ${
-           techStackFromFiles.frontend.length > 0
-             ? `- 프론트엔드: ${techStackFromFiles.frontend.join(", ")}`
-             : ""
-         }
-         ${
-           techStackFromFiles.backend.length > 0
-             ? `- 백엔드: ${techStackFromFiles.backend.join(", ")}`
-             : ""
-         }
-         ${
-           techStackFromFiles.database.length > 0
-             ? `- 데이터베이스: ${techStackFromFiles.database.join(", ")}`
-             : ""
-         }
-         ${
-           techStackFromFiles.devops.length > 0
-             ? `- DevOps: ${techStackFromFiles.devops.join(", ")}`
-             : ""
-         }
-         ${
-           techStackFromFiles.testing.length > 0
-             ? `- 테스팅: ${techStackFromFiles.testing.join(", ")}`
-             : ""
-         }
-      
-      3. 프로젝트 아키텍처:
-         - 폴더 구조의 특징
-         - 코드 구성 방식
-         - 설계 패턴이나 아키텍처 스타일
-      
-      4. 개발 과정 및 리팩토링:
-         - 주요 개발 마일스톤
-         - 코드 개선 및 리팩토링 내역
-         - 성능 최적화나 버그 수정
-      
-      5. 협업 및 개발 프로세스:
-         - PR 리뷰 패턴
-         - 코드 품질 관리
-         - 팀 협업 방식
-      
-      6. 이력서용 성과 요약:
-         - 기술적 도전과 해결 과정
-         - 프로젝트의 임팩트나 성과
-         - 개인 기여도와 역할
-         - 학습한 기술이나 경험
+GitHub 레포지토리 "${repoName}" 분석 요청
+
+=== 분석 데이터 ===
+README: ${readme}
+
+프로젝트 구조: ${projectStructure}
+
+언어 통계: ${languageStats}
+
+감지된 기술 스택:
+- 프론트엔드: ${techStackFromFiles.frontend.join(", ") || "없음"}
+- 백엔드: ${techStackFromFiles.backend.join(", ") || "없음"}
+- 데이터베이스: ${techStackFromFiles.database.join(", ") || "없음"}
+- DevOps: ${techStackFromFiles.devops.join(", ") || "없음"}
+- 테스팅: ${techStackFromFiles.testing.join(", ") || "없음"}
+
+설정 파일: ${configFiles}
+커밋 메시지: ${commitMessages}
+PR 설명: ${prDescriptions}
+
+=== 분석 요구사항 ===
+다음 형식으로 정확히 응답해주세요. 각 섹션을 명확히 구분하여 작성하세요:
+
+## 1. 프로젝트 소개
+이 프로젝트의 목적, 주요 기능, 해결하는 문제를 2-3문장으로 설명하세요.
+
+## 2. 사용 언어
+언어 통계를 바탕으로 주요 프로그래밍 언어와 사용 비율을 나열하세요.
+예: TypeScript (44%), SCSS (48%), CSS (6%)
+
+## 3. 기술 스택
+실제 감지된 프레임워크/라이브러리만 나열하세요:
+- 프론트엔드: ${
+      techStackFromFiles.frontend.length > 0
+        ? techStackFromFiles.frontend.join(", ")
+        : "없음"
+    }
+- 백엔드: ${
+      techStackFromFiles.backend.length > 0
+        ? techStackFromFiles.backend.join(", ")
+        : "없음 (프론트엔드 전용)"
+    }
+- 데이터베이스: ${
+      techStackFromFiles.database.length > 0
+        ? techStackFromFiles.database.join(", ")
+        : "없음"
+    }
+- DevOps: ${
+      techStackFromFiles.devops.length > 0
+        ? techStackFromFiles.devops.join(", ")
+        : "없음"
+    }
+- 테스팅: ${
+      techStackFromFiles.testing.length > 0
+        ? techStackFromFiles.testing.join(", ")
+        : "없음"
+    }
+
+## 4. 프로젝트 아키텍처
+폴더 구조와 프로젝트 타입(프론트엔드 전용/풀스택/API 서버)을 설명하세요.
+
+## 5. 개발 과정 및 리팩토링
+커밋 메시지를 분석하여 주요 개발 과정과 개선 사항을 설명하세요.
+
+## 6. 협업 및 개발 프로세스
+개발 패턴과 프로세스를 분석하여 설명하세요.
+
+## 7. 이력서용 성과 요약
+다음 4가지 성과를 각각 1-2문장으로 작성하세요:
+
+### 성과 1: 기술적 도전과 해결
+UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
+
+### 성과 2: 프로젝트 임팩트
+사용자 경험 개선, 개발 효율성 향상 등의 성과
+
+### 성과 3: 개인 기여도
+프로젝트 기획, 설계, 구현, 배포 등 담당 역할
+
+### 성과 4: 학습 경험
+새로운 기술 습득이나 개발 방법론 적용 경험
+
+중요: 각 섹션을 명확히 구분하고, 실제 데이터에 기반하여 작성하세요. 추측하지 마세요.
     `;
 
     logger.info(`${prompt} prompt`);
@@ -1153,10 +1184,15 @@ export const generateEnhancedRepositorySummary = async (
       messages: [
         {
           role: "system",
-          content: `당신은 소프트웨어 개발 프로젝트를 분석하는 전문가입니다. 
-          GitHub 레포지토리의 코드 구조, 커밋 히스토리, PR, 설정 파일들을 종합적으로 분석하여 
-          개발자의 이력서나 포트폴리오에 활용할 수 있는 전문적이고 구체적인 요약을 제공해주세요.
-          기술적 세부사항과 비즈니스 가치를 모두 포함하여 설명해주세요.`,
+          content: `당신은 GitHub 레포지토리를 분석하는 전문가입니다. 
+          주어진 정보를 바탕으로 정확하고 구조화된 분석 보고서를 작성해주세요.
+          
+          중요한 규칙:
+          1. 제공된 형식을 정확히 따라주세요 (## 1. 프로젝트 소개, ## 2. 사용 언어 등)
+          2. 실제 데이터에만 기반하여 작성하고, 추측하지 마세요
+          3. 각 섹션을 완전히 작성한 후 다음 섹션으로 넘어가세요
+          4. 이력서용 성과는 ### 성과 1:, ### 성과 2: 형식으로 작성하세요
+          5. 간결하고 명확하게 작성하세요`,
         },
         {
           role: "user",
@@ -1217,10 +1253,8 @@ export const generateEnhancedRepositorySummary = async (
       let sectionContent: string[] = [];
 
       for (const line of lines) {
-        // 섹션 헤더 감지 (다양한 형태의 헤더 지원)
-        if (
-          line.match(/^#+\s*\d*\.?\s*(프로젝트\s*소개|Project\s*Introduction)/i)
-        ) {
+        // 섹션 헤더 감지 (더 명확한 패턴)
+        if (line.match(/^##\s*1\.\s*프로젝트\s*소개/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1231,11 +1265,18 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "project_intro";
           sectionContent = [];
-        } else if (
-          line.match(
-            /^#+\s*\d*\.?\s*(기술\s*스택|Tech\s*Stack|Technology\s*Stack)/i
-          )
-        ) {
+        } else if (line.match(/^##\s*2\.\s*사용\s*언어/i)) {
+          if (currentSection && sectionContent.length > 0) {
+            processSection(
+              currentSection,
+              sectionContent.join(" "),
+              summary,
+              techStackFromFiles
+            );
+          }
+          currentSection = "languages";
+          sectionContent = [];
+        } else if (line.match(/^##\s*3\.\s*기술\s*스택/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1246,11 +1287,7 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "tech_stack";
           sectionContent = [];
-        } else if (
-          line.match(
-            /^#+\s*\d*\.?\s*(프로젝트\s*아키텍처|Project\s*Architecture|Architecture)/i
-          )
-        ) {
+        } else if (line.match(/^##\s*4\.\s*프로젝트\s*아키텍처/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1261,11 +1298,7 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "architecture";
           sectionContent = [];
-        } else if (
-          line.match(
-            /^#+\s*\d*\.?\s*(개발\s*과정|리팩토링|Development\s*Process|Refactoring)/i
-          )
-        ) {
+        } else if (line.match(/^##\s*5\.\s*개발\s*과정/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1276,11 +1309,7 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "refactoring_history";
           sectionContent = [];
-        } else if (
-          line.match(
-            /^#+\s*\d*\.?\s*(협업|개발\s*프로세스|Collaboration|Development\s*Flow)/i
-          )
-        ) {
+        } else if (line.match(/^##\s*6\.\s*협업/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1291,9 +1320,7 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "collaboration_flow";
           sectionContent = [];
-        } else if (
-          line.match(/^#+\s*\d*\.?\s*(이력서|성과|Resume|Achievement|Impact)/i)
-        ) {
+        } else if (line.match(/^##\s*7\.\s*이력서용\s*성과/i)) {
           if (currentSection && sectionContent.length > 0) {
             processSection(
               currentSection,
@@ -1304,8 +1331,8 @@ export const generateEnhancedRepositorySummary = async (
           }
           currentSection = "resume_bullets";
           sectionContent = [];
-        } else if (currentSection && !line.match(/^#+/)) {
-          // 현재 섹션의 내용 수집
+        } else if (currentSection && !line.match(/^##/)) {
+          // 현재 섹션의 내용 수집 (하위 헤더 포함)
           sectionContent.push(line);
         }
       }
@@ -1326,7 +1353,26 @@ export const generateEnhancedRepositorySummary = async (
         !summary.tech_stack.frontend?.length &&
         !summary.refactoring_history
       ) {
-        summary.project_intro = content.substring(0, 1000); // 첫 1000자만 저장
+        // 더 나은 기본값 설정
+        const contentLines = content.split("\n").filter((line) => line.trim());
+
+        // 프로젝트 소개 부분 찾기
+        const introStart = contentLines.findIndex(
+          (line) =>
+            line.includes("프로젝트 소개") ||
+            line.includes("Project Introduction")
+        );
+
+        if (introStart >= 0 && introStart + 1 < contentLines.length) {
+          summary.project_intro =
+            contentLines
+              .slice(introStart + 1, introStart + 4)
+              .join(" ")
+              .trim() || `${repoName} 프로젝트`;
+        } else {
+          summary.project_intro = `${repoName} 프로젝트 - GitHub 레포지토리 분석`;
+        }
+
         summary.tech_stack = {
           frontend:
             techStackFromFiles.frontend.length > 0
@@ -1348,17 +1394,27 @@ export const generateEnhancedRepositorySummary = async (
             techStackFromFiles.testing.length > 0
               ? techStackFromFiles.testing
               : [],
-          other:
-            techStackFromFiles.detected.length > 0
-              ? [techStackFromFiles.detected.join(", ")]
-              : ["분석된 기술 스택 없음"],
+          other: [`언어 통계: ${languageStats}`],
         };
-        summary.refactoring_history = "AI 응답 파싱 실패로 인한 기본 내용";
-        summary.collaboration_flow = "AI 응답 파싱 실패로 인한 기본 내용";
+
+        summary.refactoring_history = commitMessages
+          ? `주요 커밋 내역: ${commitMessages.substring(0, 200)}...`
+          : "개발 과정 분석 필요";
+
+        summary.collaboration_flow = prDescriptions
+          ? `PR 분석: ${prDescriptions.substring(0, 200)}...`
+          : "개인 프로젝트로 추정";
+
         summary.resume_bullets = [
           {
-            title: "프로젝트 분석 완료",
-            content: "프로젝트 기본 분석이 완료되었습니다.",
+            title: "프로젝트 개발 완료",
+            content: `${repoName} 프로젝트를 성공적으로 개발하고 배포했습니다.`,
+          },
+          {
+            title: "기술 스택 활용",
+            content: `${
+              techStackFromFiles.detected.join(", ") || "다양한 기술"
+            }을 활용하여 프로젝트를 구현했습니다.`,
           },
         ];
       }
@@ -1440,6 +1496,16 @@ const processSection = (
     case "project_intro":
       summary.project_intro = cleanContent;
       break;
+
+    case "languages":
+      // 사용 언어 정보를 tech_stack.other에 저장
+      if (summary.tech_stack.other) {
+        summary.tech_stack.other.push(`사용 언어: ${cleanContent}`);
+      } else {
+        summary.tech_stack.other = [`사용 언어: ${cleanContent}`];
+      }
+      break;
+
     case "tech_stack":
       // 실제 감지된 기술 스택을 우선 사용
       if (detectedTechStack) {
@@ -1462,153 +1528,130 @@ const processSection = (
             detectedTechStack.testing.length > 0
               ? detectedTechStack.testing
               : [],
-          other: [],
-        };
-      } else {
-        // 기존 방식으로 폴백
-        const techLines = cleanContent
-          .split(/[,\n]/)
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0);
-        summary.tech_stack = {
-          frontend: techLines.filter(
-            (tech) =>
-              tech.toLowerCase().includes("react") ||
-              tech.toLowerCase().includes("vue") ||
-              tech.toLowerCase().includes("angular") ||
-              tech.toLowerCase().includes("frontend") ||
-              tech.toLowerCase().includes("프론트")
-          ),
-          backend: techLines.filter(
-            (tech) =>
-              tech.toLowerCase().includes("node") ||
-              tech.toLowerCase().includes("express") ||
-              tech.toLowerCase().includes("django") ||
-              tech.toLowerCase().includes("backend") ||
-              tech.toLowerCase().includes("백엔드")
-          ),
-          database: techLines.filter(
-            (tech) =>
-              tech.toLowerCase().includes("mysql") ||
-              tech.toLowerCase().includes("postgres") ||
-              tech.toLowerCase().includes("mongodb") ||
-              tech.toLowerCase().includes("database") ||
-              tech.toLowerCase().includes("데이터베이스")
-          ),
-          devops: techLines.filter(
-            (tech) =>
-              tech.toLowerCase().includes("docker") ||
-              tech.toLowerCase().includes("kubernetes") ||
-              tech.toLowerCase().includes("aws") ||
-              tech.toLowerCase().includes("devops") ||
-              tech.toLowerCase().includes("배포")
-          ),
-          testing: techLines.filter(
-            (tech) =>
-              tech.toLowerCase().includes("jest") ||
-              tech.toLowerCase().includes("cypress") ||
-              tech.toLowerCase().includes("test") ||
-              tech.toLowerCase().includes("테스트")
-          ),
-          other: techLines.filter(
-            (tech) =>
-              !tech.toLowerCase().includes("react") &&
-              !tech.toLowerCase().includes("node") &&
-              !tech.toLowerCase().includes("mysql") &&
-              !tech.toLowerCase().includes("docker") &&
-              !tech.toLowerCase().includes("jest") &&
-              !tech.toLowerCase().includes("frontend") &&
-              !tech.toLowerCase().includes("backend") &&
-              !tech.toLowerCase().includes("database") &&
-              !tech.toLowerCase().includes("devops") &&
-              !tech.toLowerCase().includes("test")
-          ),
+          other: summary.tech_stack.other || [],
         };
       }
       break;
+
     case "architecture":
       if (summary.tech_stack.other) {
-        summary.tech_stack.other.push(cleanContent);
+        summary.tech_stack.other.push(`아키텍처: ${cleanContent}`);
       } else {
-        summary.tech_stack.other = [cleanContent];
+        summary.tech_stack.other = [`아키텍처: ${cleanContent}`];
       }
       break;
+
     case "refactoring_history":
       summary.refactoring_history = cleanContent;
       break;
+
     case "collaboration_flow":
       summary.collaboration_flow = cleanContent;
       break;
+
     case "resume_bullets":
-      // 텍스트를 의미있는 단위로 분리
-      let bullets: string[] = [];
+      // ### 형식의 성과 섹션 파싱
+      const achievementSections = cleanContent.split(/###\s*성과\s*\d+:/);
+      const bullets: Array<{ title: string; content: string }> = [];
 
-      // 먼저 불릿 포인트 기호로 분리 시도
-      if (
-        cleanContent.includes("•") ||
-        cleanContent.includes("-") ||
-        cleanContent.includes("*")
-      ) {
-        bullets = cleanContent
-          .split(/[•\-\*]/)
-          .map((bullet) => bullet.trim())
-          .filter((bullet) => bullet.length > 10); // 너무 짧은 것은 제외
-      }
-      // 불릿 포인트가 없으면 문장 단위로 분리
-      else {
-        // 콜론(:)을 기준으로 주요 섹션 분리
-        const sections = cleanContent
-          .split(/:\s*/)
-          .filter((section) => section.trim().length > 0);
+      achievementSections.forEach((section, index) => {
+        if (index === 0) return; // 첫 번째는 빈 문자열
 
-        if (sections.length > 1) {
-          // 콜론으로 분리된 섹션들을 처리
-          for (let i = 0; i < sections.length - 1; i++) {
-            const title =
-              sections[i].split(/[.!?]/).pop()?.trim() || sections[i].trim();
-            const content =
-              sections[i + 1].split(/[.!?]/)[0]?.trim() ||
-              sections[i + 1].trim();
+        const lines = section
+          .trim()
+          .split("\n")
+          .filter((line) => line.trim());
+        if (lines.length === 0) return;
 
-            if (title && content && title.length > 3 && content.length > 3) {
-              bullets.push(`${title}: ${content}`);
-            }
-          }
-        } else {
-          // 마침표나 느낌표로 문장 분리
-          bullets = cleanContent
-            .split(/[.!?]/)
-            .map((sentence) => sentence.trim())
-            .filter((sentence) => sentence.length > 20); // 의미있는 길이의 문장만
-        }
-      }
+        const title = lines[0].trim();
+        const content = lines.slice(1).join(" ").trim();
 
-      // bullets가 여전히 비어있으면 전체 텍스트를 하나의 bullet으로
-      if (bullets.length === 0) {
-        bullets = [cleanContent];
-      }
-
-      summary.resume_bullets = bullets.map((bullet, index) => {
-        // 콜론이 있으면 콜론 앞을 title로, 뒤를 content로
-        if (bullet.includes(":")) {
-          const [title, ...contentParts] = bullet.split(":");
-          return {
-            title: title.trim() || `성과 ${index + 1}`,
-            content: contentParts.join(":").trim() || title.trim(),
-          };
-        }
-        // 콜론이 없으면 첫 번째 문장을 title로, 나머지를 content로
-        else {
-          const sentences = bullet.split(/[.!?]/).filter((s) => s.trim());
-          const title = sentences[0]?.trim() || `성과 ${index + 1}`;
-          const content = sentences.slice(1).join(". ").trim() || bullet.trim();
-
-          return {
-            title: title.length > 80 ? title.substring(0, 80) : title,
-            content: content || bullet.trim(),
-          };
+        if (title && content) {
+          bullets.push({
+            title: title.length > 80 ? title.substring(0, 80) + "..." : title,
+            content:
+              content.length > 200
+                ? content.substring(0, 200) + "..."
+                : content,
+          });
         }
       });
+
+      // ### 형식으로 파싱이 안 된 경우 기존 방식 사용
+      if (bullets.length === 0) {
+        // 텍스트를 의미있는 단위로 분리
+        let fallbackBullets: string[] = [];
+
+        // 먼저 불릿 포인트 기호로 분리 시도
+        if (
+          cleanContent.includes("•") ||
+          cleanContent.includes("-") ||
+          cleanContent.includes("*")
+        ) {
+          fallbackBullets = cleanContent
+            .split(/[•\-\*]/)
+            .map((bullet) => bullet.trim())
+            .filter((bullet) => bullet.length > 10);
+        }
+        // 불릿 포인트가 없으면 문장 단위로 분리
+        else {
+          // 콜론(:)을 기준으로 주요 섹션 분리
+          const sections = cleanContent
+            .split(/:\s*/)
+            .filter((section) => section.trim().length > 0);
+
+          if (sections.length > 1) {
+            // 콜론으로 분리된 섹션들을 처리
+            for (let i = 0; i < sections.length - 1; i++) {
+              const title =
+                sections[i].split(/[.!?]/).pop()?.trim() || sections[i].trim();
+              const content =
+                sections[i + 1].split(/[.!?]/)[0]?.trim() ||
+                sections[i + 1].trim();
+
+              if (title && content && title.length > 3 && content.length > 3) {
+                fallbackBullets.push(`${title}: ${content}`);
+              }
+            }
+          } else {
+            // 마침표나 느낌표로 문장 분리
+            fallbackBullets = cleanContent
+              .split(/[.!?]/)
+              .map((sentence) => sentence.trim())
+              .filter((sentence) => sentence.length > 20);
+          }
+        }
+
+        // fallbackBullets가 여전히 비어있으면 전체 텍스트를 하나의 bullet으로
+        if (fallbackBullets.length === 0) {
+          fallbackBullets = [cleanContent];
+        }
+
+        summary.resume_bullets = fallbackBullets.map((bullet, index) => {
+          // 콜론이 있으면 콜론 앞을 title로, 뒤를 content로
+          if (bullet.includes(":")) {
+            const [title, ...contentParts] = bullet.split(":");
+            return {
+              title: title.trim() || `성과 ${index + 1}`,
+              content: contentParts.join(":").trim() || title.trim(),
+            };
+          }
+          // 콜론이 없으면 첫 번째 문장을 title로, 나머지를 content로
+          else {
+            const sentences = bullet.split(/[.!?]/).filter((s) => s.trim());
+            const title = sentences[0]?.trim() || `성과 ${index + 1}`;
+            const content =
+              sentences.slice(1).join(". ").trim() || bullet.trim();
+
+            return {
+              title: title.length > 80 ? title.substring(0, 80) : title,
+              content: content || bullet.trim(),
+            };
+          }
+        });
+      } else {
+        summary.resume_bullets = bullets;
+      }
 
       // 빈 배열인 경우 기본값 설정
       if (summary.resume_bullets.length === 0) {
