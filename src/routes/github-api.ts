@@ -3,6 +3,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import githubService from "../services/github-service";
 import repositoryService from "../services/repository-service";
 import aiSummaryService from "../services/ai-summary-service";
+import { convertToISO8601 } from "../utils";
 import { generateToken, checkAuth } from "../utils/jwt";
 import logger from "../utils/logger";
 
@@ -26,7 +27,6 @@ const errorResponse = (
     error: error instanceof Error ? error.message : "Unknown error",
   });
 };
-
 export default async function githubRoutes(
   fastify: FastifyInstance
 ): Promise<void> {
@@ -1323,6 +1323,118 @@ export default async function githubRoutes(
           error,
           "Error exporting summary as notion blocks"
         );
+      }
+    }
+  );
+
+  // Get All Commits (using GitHub Search API)
+  fastify.get(
+    "/github/commits/all",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          since?: string;
+          until?: string;
+          per_page?: string;
+          page?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const user = await checkAuth(request);
+        const { since, until, per_page = "30", page = "1" } = request.query;
+
+        // 날짜 형식 변환
+        const convertedSince = since ? convertToISO8601(since) : undefined;
+        const convertedUntil = until
+          ? convertToISO8601(until, true)
+          : undefined;
+
+        // 모든 사용자 커밋 가져오기
+        const result = await githubService.getAllUserCommits(
+          user.access_token,
+          user.username,
+          {
+            since: convertedSince,
+            until: convertedUntil,
+            perPage: parseInt(per_page),
+            page: parseInt(page),
+          }
+        );
+
+        return reply.send({
+          status: "success",
+          data: {
+            commits: result.commits,
+            totalCount: result.totalCount,
+            hasMore: result.hasMore,
+            pagination: {
+              page: parseInt(page),
+              perPage: parseInt(per_page),
+            },
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "Authentication required" ||
+            error.message === "Invalid token")
+        ) {
+          return reply.status(401).send({
+            status: "error",
+            message: error.message,
+          });
+        }
+        return errorResponse(reply, error, "Error fetching all user commits");
+      }
+    }
+  );
+
+  // 사용자의 커밋 통계 가져오기
+  fastify.get(
+    "/github/commits/stats",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          since?: string;
+          until?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const { since, until } = request.query;
+        const user = await checkAuth(request);
+
+        // GitHub 사용자 정보 가져오기
+        const githubUser = await githubService.getGitHubUser(user.access_token);
+
+        const stats = await githubService.getUserCommitStats(
+          user.access_token,
+          githubUser.login,
+          {
+            since: since ? convertToISO8601(since) : undefined,
+            until: until ? convertToISO8601(until, true) : undefined,
+          }
+        );
+
+        return reply.send({
+          status: "success",
+          data: stats,
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "Authentication required" ||
+            error.message === "Invalid token")
+        ) {
+          return reply.status(401).send({
+            status: "error",
+            message: error.message,
+          });
+        }
+        return errorResponse(reply, error, "Error fetching user commit stats");
       }
     }
   );

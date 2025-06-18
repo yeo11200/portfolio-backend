@@ -1013,6 +1013,229 @@ export const getPrivateRepository = async (
   }
 };
 
+/**
+ * 사용자의 모든 커밋 가져오기 (GitHub Search API 사용)
+ * 가장 효율적인 방법 - 모든 레포지토리의 커밋을 한 번에 검색
+ */
+export const getAllUserCommits = async (
+  accessToken: string,
+  username: string,
+  options: {
+    since?: string; // ISO 8601 format (예: '2023-01-01T00:00:00Z')
+    until?: string; // ISO 8601 format
+    perPage?: number;
+    page?: number;
+  } = {}
+): Promise<{
+  commits: any[];
+  totalCount: number;
+  hasMore: boolean;
+}> => {
+  try {
+    const { since, until, perPage = 100, page = 1 } = options;
+
+    // GitHub Search API를 사용하여 사용자의 모든 커밋 검색
+    let query = `author:${username}`;
+
+    // 날짜 범위 필터 추가
+    if (since || until) {
+      if (since && until) {
+        query += ` author-date:${since}..${until}`;
+      } else if (since) {
+        query += ` author-date:>=${since}`;
+      } else if (until) {
+        query += ` author-date:<=${until}`;
+      }
+    }
+
+    const response = await axios.get("https://api.github.com/search/commits", {
+      headers: {
+        Authorization: `token ${accessToken}`,
+        Accept: "application/vnd.github.cloak-preview+json", // Search commits API preview
+      },
+      params: {
+        q: query,
+        sort: "author-date",
+        order: "desc",
+        per_page: perPage,
+        page,
+      },
+    });
+
+    return {
+      commits: response.data.items || [],
+      totalCount: response.data.total_count || 0,
+      hasMore: response.data.items?.length === perPage,
+    };
+  } catch (error) {
+    logger.error({ error, username }, "Error fetching all user commits");
+    throw new Error("Failed to fetch all user commits");
+  }
+};
+
+/**
+ * 사용자의 모든 커밋 가져오기 (레포지토리별 순회 방법)
+ * 더 상세한 정보가 필요할 때 사용
+ */
+export const getAllUserCommitsByRepositories = async (
+  accessToken: string,
+  options: {
+    since?: string;
+    until?: string;
+    maxRepos?: number;
+    commitsPerRepo?: number;
+  } = {}
+): Promise<{
+  commits: any[];
+  repositoriesProcessed: number;
+  totalCommits: number;
+}> => {
+  try {
+    const { since, until, maxRepos = 50, commitsPerRepo = 100 } = options;
+
+    // 1. 사용자의 모든 레포지토리 가져오기
+    const repositories = await getUserRepositories(accessToken, 1, maxRepos);
+
+    const allCommits: any[] = [];
+    let repositoriesProcessed = 0;
+
+    // 2. 각 레포지토리의 커밋들을 병렬로 가져오기
+    const commitPromises = repositories.map(async (repo: any) => {
+      try {
+        const params: any = {
+          author: repo.owner.login, // 해당 사용자가 작성한 커밋만
+          per_page: commitsPerRepo,
+        };
+
+        if (since) params.since = since;
+        if (until) params.until = until;
+
+        const response = await axios.get(
+          `https://api.github.com/repos/${repo.full_name}/commits`,
+          {
+            headers: {
+              Authorization: `token ${accessToken}`,
+              Accept: "application/vnd.github.v3+json",
+            },
+            params,
+          }
+        );
+
+        const commits = response.data || [];
+
+        // 각 커밋에 레포지토리 정보 추가
+        const commitsWithRepo = commits.map((commit: any) => ({
+          ...commit,
+          repository: {
+            name: repo.name,
+            full_name: repo.full_name,
+            owner: repo.owner.login,
+            private: repo.private,
+            language: repo.language,
+            html_url: repo.html_url,
+          },
+        }));
+
+        repositoriesProcessed++;
+        return commitsWithRepo;
+      } catch (error) {
+        logger.warn(
+          { error, repo: repo.full_name },
+          "Failed to fetch commits for repository"
+        );
+        return [];
+      }
+    });
+
+    // 모든 커밋 데이터 수집
+    const commitsArrays = await Promise.all(commitPromises);
+    commitsArrays.forEach((commits) => allCommits.push(...commits));
+
+    // 날짜순으로 정렬
+    allCommits.sort(
+      (a, b) =>
+        new Date(b.commit.author.date).getTime() -
+        new Date(a.commit.author.date).getTime()
+    );
+
+    return {
+      commits: allCommits,
+      repositoriesProcessed,
+      totalCommits: allCommits.length,
+    };
+  } catch (error) {
+    logger.error({ error }, "Error fetching all user commits by repositories");
+    throw new Error("Failed to fetch all user commits by repositories");
+  }
+};
+
+/**
+ * 사용자의 커밋 통계 가져오기
+ */
+export const getUserCommitStats = async (
+  accessToken: string,
+  username: string,
+  options: {
+    since?: string;
+    until?: string;
+  } = {}
+): Promise<{
+  totalCommits: number;
+  repositoriesWithCommits: number;
+  languageStats: Record<string, number>;
+  dailyStats: Record<string, number>;
+  monthlyStats: Record<string, number>;
+}> => {
+  try {
+    const { since, until } = options;
+
+    // Search API로 총 커밋 수 확인
+    const searchResult = await getAllUserCommits(accessToken, username, {
+      since,
+      until,
+      perPage: 1,
+    });
+
+    // 상세 정보를 위해 레포지토리별 커밋 가져오기 (샘플링)
+    const detailedResult = await getAllUserCommitsByRepositories(accessToken, {
+      since,
+      until,
+      maxRepos: 30, // 성능을 위해 최대 30개 레포지토리만 분석
+      commitsPerRepo: 50,
+    });
+
+    // 언어별 통계
+    const languageStats: Record<string, number> = {};
+    const dailyStats: Record<string, number> = {};
+    const monthlyStats: Record<string, number> = {};
+
+    detailedResult.commits.forEach((commit) => {
+      const language = commit.repository?.language || "Unknown";
+      languageStats[language] = (languageStats[language] || 0) + 1;
+
+      const date = new Date(commit.commit.author.date);
+      const dayKey = date.toISOString().split("T")[0]; // YYYY-MM-DD
+      const monthKey = `${date.getFullYear()}-${String(
+        date.getMonth() + 1
+      ).padStart(2, "0")}`; // YYYY-MM
+
+      dailyStats[dayKey] = (dailyStats[dayKey] || 0) + 1;
+      monthlyStats[monthKey] = (monthlyStats[monthKey] || 0) + 1;
+    });
+
+    return {
+      totalCommits: searchResult.totalCount,
+      repositoriesWithCommits: detailedResult.repositoriesProcessed,
+      languageStats,
+      dailyStats,
+      monthlyStats,
+    };
+  } catch (error) {
+    logger.error({ error, username }, "Error fetching user commit stats");
+    throw new Error("Failed to fetch user commit stats");
+  }
+};
+
 export default {
   getGitHubAuthUrl,
   handleGitHubCallback,
@@ -1031,4 +1254,7 @@ export default {
   getUserCreatedAt,
   getUserRepositories,
   getPrivateRepository,
+  getAllUserCommits,
+  getAllUserCommitsByRepositories,
+  getUserCommitStats,
 };
