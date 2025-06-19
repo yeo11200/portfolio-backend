@@ -516,6 +516,228 @@ export const savePullRequests = async (
   }
 };
 
+/**
+ * 개별 파일의 실제 내용 가져오기 (코드 분석용)
+ */
+export const getFileContent = async (
+  accessToken: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string = "main"
+): Promise<{ content: string; encoding: string; size: number } | null> => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+      {
+        params: { ref },
+        headers: {
+          Authorization: `token ${accessToken}`,
+          Accept: "application/vnd.github+json",
+        },
+      }
+    );
+
+    const fileData = response.data;
+
+    // 파일이 너무 크면 스킵 (1MB 이상)
+    if (fileData.size > 1024 * 1024) {
+      logger.warn(
+        { owner, repo, path, size: fileData.size },
+        "File too large, skipping content analysis"
+      );
+      return null;
+    }
+
+    // 바이너리 파일이거나 content가 없으면 스킵
+    if (!fileData.content || fileData.type !== "file") {
+      logger.warn(
+        {
+          owner,
+          repo,
+          path,
+          type: fileData.type,
+          hasContent: !!fileData.content,
+        },
+        "File has no content or is not a file type, skipping"
+      );
+      return null;
+    }
+
+    let content = "";
+    if (fileData.encoding === "base64") {
+      content = Buffer.from(fileData.content, "base64").toString("utf-8");
+    } else {
+      content = fileData.content;
+    }
+
+    logger.info(
+      { path, size: fileData.size, encoding: fileData.encoding },
+      "File content successfully retrieved"
+    );
+
+    return {
+      content,
+      encoding: fileData.encoding,
+      size: fileData.size,
+    };
+  } catch (error) {
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : "Unknown error",
+        owner,
+        repo,
+        path,
+        ref,
+      },
+      "Error fetching file content"
+    );
+    return null;
+  }
+};
+
+/**
+ * 여러 파일의 내용을 한번에 가져오기 (배치 처리)
+ */
+export const getMultipleFileContents = async (
+  accessToken: string,
+  owner: string,
+  repo: string,
+  filePaths: string[],
+  ref: string = "main",
+  maxFiles: number = 100 // 한번에 처리할 최대 파일 수를 100개로 증가
+): Promise<
+  Record<string, { content: string; size: number; language?: string }>
+> => {
+  const results: Record<
+    string,
+    { content: string; size: number; language?: string }
+  > = {};
+
+  // 파일 수 제한
+  const limitedPaths = filePaths.slice(0, maxFiles);
+
+  logger.info(
+    `Processing ${limitedPaths.length} files out of ${filePaths.length} total files`
+  );
+
+  // 병렬로 파일 내용 가져오기 (동시 요청 수 제한)
+  const batchSize = 8; // 배치 크기를 8로 줄여서 API 안정성 확보
+  for (let i = 0; i < limitedPaths.length; i += batchSize) {
+    const batch = limitedPaths.slice(i, i + batchSize);
+
+    const batchPromises = batch.map(async (filePath) => {
+      const fileContent = await getFileContent(
+        accessToken,
+        owner,
+        repo,
+        filePath,
+        ref
+      );
+      if (fileContent) {
+        const language = getLanguageFromExtension(filePath);
+        results[filePath] = {
+          content: fileContent.content,
+          size: fileContent.size,
+          language,
+        };
+        return { filePath, success: true };
+      }
+      return { filePath, success: false };
+    });
+
+    logger.info(
+      `Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(
+        limitedPaths.length / batchSize
+      )} (${batch.length} files)`
+    );
+
+    const batchResults = await Promise.all(batchPromises);
+
+    const successCount = batchResults.filter((r) => r.success).length;
+    logger.info(
+      `Batch completed: ${successCount}/${batch.length} files processed successfully`
+    );
+
+    // API 레이트 리미트 방지를 위한 딜레이
+    if (i + batchSize < limitedPaths.length) {
+      await new Promise((resolve) => setTimeout(resolve, 150)); // 딜레이 증가
+    }
+  }
+
+  logger.info(
+    `File content processing completed: ${Object.keys(results).length}/${
+      limitedPaths.length
+    } files successfully processed`
+  );
+
+  return results;
+};
+
+/**
+ * 파일 확장자로 언어 추정
+ */
+const getLanguageFromExtension = (filePath: string): string => {
+  const extension = filePath.split(".").pop()?.toLowerCase() || "";
+
+  const languageMap: Record<string, string> = {
+    js: "JavaScript",
+    jsx: "JavaScript",
+    ts: "TypeScript",
+    tsx: "TypeScript",
+    py: "Python",
+    java: "Java",
+    cpp: "C++",
+    c: "C",
+    cs: "C#",
+    php: "PHP",
+    rb: "Ruby",
+    go: "Go",
+    rs: "Rust",
+    swift: "Swift",
+    kt: "Kotlin",
+    scala: "Scala",
+    html: "HTML",
+    css: "CSS",
+    scss: "SCSS",
+    sass: "Sass",
+    less: "Less",
+    vue: "Vue",
+    svelte: "Svelte",
+    json: "JSON",
+    xml: "XML",
+    yaml: "YAML",
+    yml: "YAML",
+    toml: "TOML",
+    md: "Markdown",
+    sql: "SQL",
+    sh: "Shell",
+    bash: "Bash",
+    zsh: "Zsh",
+    fish: "Fish",
+    ps1: "PowerShell",
+    r: "R",
+    matlab: "MATLAB",
+    dart: "Dart",
+    lua: "Lua",
+    perl: "Perl",
+    haskell: "Haskell",
+    clj: "Clojure",
+    elm: "Elm",
+    ex: "Elixir",
+    erl: "Erlang",
+    f90: "Fortran",
+    jl: "Julia",
+    nim: "Nim",
+    pas: "Pascal",
+    pl: "Perl",
+    pro: "Prolog",
+    rkt: "Racket",
+  };
+
+  return languageMap[extension] || "Unknown";
+};
+
 export default {
   getUserRepositories,
   getRepository,
@@ -529,4 +751,6 @@ export default {
   saveCommitHistory,
   savePullRequests,
   getDefaultBranch,
+  getFileContent,
+  getMultipleFileContents,
 };

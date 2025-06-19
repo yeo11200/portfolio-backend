@@ -1060,7 +1060,7 @@ export const generateEnhancedRepositorySummary = async (
   commits: any[],
   pullRequests: any[],
   tree: any[],
-  importantFiles: { [key: string]: string },
+  importantFiles: { [key: string]: any },
   languages: { [key: string]: number }
 ): Promise<RepositorySummary> => {
   try {
@@ -1075,7 +1075,65 @@ export const generateEnhancedRepositorySummary = async (
       .join("\n");
 
     const projectStructure = analyzeProjectStructure(tree);
-    const techStackFromFiles = analyzeTechStackFromFiles(importantFiles);
+
+    // 파일 내용이 있는 경우와 없는 경우를 구분하여 처리
+    const filesWithContent = Object.entries(importantFiles).filter(
+      ([_, fileInfo]) =>
+        fileInfo && typeof fileInfo === "object" && fileInfo.hasContent
+    );
+
+    const filesWithoutContent = Object.entries(importantFiles).filter(
+      ([_, fileInfo]) =>
+        !fileInfo || typeof fileInfo !== "object" || !fileInfo.hasContent
+    );
+
+    logger.info(
+      `Analyzing ${filesWithContent.length} files with content, ${
+        filesWithoutContent.length
+      } files without content (total: ${
+        Object.keys(importantFiles).length
+      } files)`
+    );
+
+    // 파일 내용 분석을 위한 코드 스니펫 생성
+    const codeAnalysis =
+      filesWithContent.length > 0
+        ? filesWithContent
+            .slice(0, 15)
+            .map(([filePath, fileInfo]) => {
+              // 최대 15개 파일의 코드 스니펫 포함
+              const content = fileInfo.content || "";
+              const truncatedContent =
+                content.length > 2000
+                  ? content.substring(0, 2000) + "\n... (내용 생략)"
+                  : content;
+
+              return `
+파일: ${filePath} (${fileInfo.detectedLanguage || "Unknown"}, ${
+                fileInfo.contentSize || 0
+              } bytes)
+내용:
+\`\`\`
+${truncatedContent}
+\`\`\`
+`;
+            })
+            .join("\n")
+        : "";
+
+    logger.info(
+      `Generated code analysis for ${Math.min(
+        filesWithContent.length,
+        15
+      )} files with content`
+    );
+
+    const techStackFromFiles = analyzeTechStackFromFiles(
+      filesWithoutContent.reduce((acc, [path, info]) => {
+        acc[path] = typeof info === "string" ? info : info?.type || "";
+        return acc;
+      }, {} as { [key: string]: string })
+    );
 
     const languageStats = Object.entries(languages)
       .sort((a, b) => b[1] - a[1])
@@ -1088,20 +1146,35 @@ export const generateEnhancedRepositorySummary = async (
     logger.info(`${projectStructure} projectStructure`);
     logger.info(`${languageStats} languageStats`);
     logger.info(`${configFiles} configFiles`);
-    logger.info(`${commitMessages} commitMessages`);
-    logger.info(`${prDescriptions} prDescriptions`);
 
     const prompt = `
-GitHub 레포지토리 "${repoName}" 분석 요청
+GitHub 레포지토리 "${repoName}" 심층 분석 요청
 
-=== 분석 데이터 ===
+=== 기본 정보 ===
 README: ${readme}
 
 프로젝트 구조: ${projectStructure}
 
 언어 통계: ${languageStats}
 
-감지된 기술 스택:
+=== 파일 내용 분석 ===
+${
+  codeAnalysis
+    ? `
+다음은 주요 파일들의 실제 코드 내용입니다:
+${codeAnalysis}
+
+이 코드들을 분석하여 다음을 파악하세요:
+1. 실제 사용되는 라이브러리와 프레임워크
+2. 코드 아키텍처 패턴 (컴포넌트 구조, 상태 관리, API 호출 방식 등)
+3. 개발자의 코딩 스타일과 기술 수준
+4. 프로젝트의 복잡도와 완성도
+5. 특별한 기술적 구현이나 최적화 기법
+`
+    : "파일 내용을 분석할 수 없어 구조와 설정 파일만으로 분석합니다."
+}
+
+=== 감지된 기술 스택 ===
 - 프론트엔드: ${techStackFromFiles.frontend.join(", ") || "없음"}
 - 백엔드: ${techStackFromFiles.backend.join(", ") || "없음"}
 - 데이터베이스: ${techStackFromFiles.database.join(", ") || "없음"}
@@ -1113,17 +1186,22 @@ README: ${readme}
 PR 설명: ${prDescriptions}
 
 === 분석 요구사항 ===
-다음 형식으로 정확히 응답해주세요. 각 섹션을 명확히 구분하여 작성하세요:
+${
+  codeAnalysis ? "실제 코드 내용을 바탕으로" : "프로젝트 구조와 설정을 바탕으로"
+} 다음 형식으로 정확히 응답해주세요:
 
 ## 1. 프로젝트 소개
-이 프로젝트의 목적, 주요 기능, 해결하는 문제를 2-3문장으로 설명하세요.
+${
+  codeAnalysis ? "코드 분석을 통해 파악한" : "구조 분석을 통해 추정한"
+} 프로젝트의 목적, 주요 기능, 해결하는 문제를 2-3문장으로 설명하세요.
 
 ## 2. 사용 언어
 언어 통계를 바탕으로 주요 프로그래밍 언어와 사용 비율을 나열하세요.
-예: TypeScript (44%), SCSS (48%), CSS (6%)
 
 ## 3. 기술 스택
-실제 감지된 프레임워크/라이브러리만 나열하세요:
+${
+  codeAnalysis ? "실제 코드에서 확인된" : "설정 파일에서 감지된"
+} 기술들을 나열하세요:
 - 프론트엔드: ${
       techStackFromFiles.frontend.length > 0
         ? techStackFromFiles.frontend.join(", ")
@@ -1151,63 +1229,106 @@ PR 설명: ${prDescriptions}
     }
 
 ## 4. 프로젝트 아키텍처
-폴더 구조와 프로젝트 타입(프론트엔드 전용/풀스택/API 서버)을 설명하세요.
+${
+  codeAnalysis ? "코드 구조와 파일 내용을 분석하여" : "폴더 구조를 분석하여"
+} 프로젝트 아키텍처를 설명하세요.
 
-## 5. 개발 과정 및 리팩토링
-다음 정보를 종합하여 개발 과정을 분석하세요:
-- 프로젝트 구조에서 보이는 개발 단계 (폴더 구성, 파일 분리 정도)
-- 설정 파일들이 보여주는 기술 선택과 발전 과정
-- 코드 구성 방식에서 추론되는 아키텍처 발전
-- 커밋 메시지가 있다면 주요 개발 마일스톤
-- 파일 확장자와 구조로 보이는 기술 스택 진화
+## 5. 개발 과정 및 기술적 구현
+${
+  codeAnalysis
+    ? `
+코드 분석을 통해 다음을 설명하세요:
+- 주요 기능 구현 방식과 기술적 특징
+- 사용된 디자인 패턴이나 아키텍처 패턴
+- 상태 관리, API 연동, 라우팅 등의 구현 방식
+- 코드 품질과 최적화 기법
+- 에러 처리나 예외 상황 대응 방식
+`
+    : `
+프로젝트 구조와 설정을 통해 다음을 추정하세요:
+- 개발 단계와 프로젝트 완성도
+- 기술 선택의 이유와 발전 과정
+- 아키텍처 설계 방향성
+`
+}
 
 ## 6. 협업 및 개발 프로세스
 다음을 종합하여 개발 프로세스를 분석하세요:
-- 프로젝트 규모와 복잡도로 추론되는 개발 방식 (개인/팀 프로젝트)
+${codeAnalysis ? "- 코드 스타일과 구조화 수준으로 보이는 개발 방법론" : ""}
+- 프로젝트 규모와 복잡도로 추론되는 개발 방식
 - 설정 파일들이 보여주는 개발 환경과 도구 사용
-- 코드 구조의 체계성과 모듈화 수준
-- PR과 커밋 패턴이 있다면 협업 스타일 분석
-- 테스트나 CI/CD 설정 파일 존재 여부
+- PR과 커밋 패턴 분석 (있는 경우)
 
 ## 7. 이력서용 성과 요약
-다음 4가지 성과를 각각 1-2문장으로 작성하세요:
+${
+  codeAnalysis ? "실제 코드 구현을 바탕으로" : "프로젝트 구조를 바탕으로"
+} 다음 4가지 성과를 각각 1-2문장으로 작성하세요:
 
 ### 성과 1: 기술적 도전과 해결
-UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
+${
+  codeAnalysis
+    ? "코드에서 확인되는 복잡한 로직이나 기술적 문제 해결"
+    : "UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험"
+}
 
 ### 성과 2: 프로젝트 임팩트
-사용자 경험 개선, 개발 효율성 향상 등의 성과
+${
+  codeAnalysis
+    ? "구현된 기능들이 제공하는 사용자 가치와 비즈니스 임팩트"
+    : "사용자 경험 개선, 개발 효율성 향상 등의 성과"
+}
 
 ### 성과 3: 개인 기여도
-프로젝트 기획, 설계, 구현, 배포 등 담당 역할
+${
+  codeAnalysis
+    ? "코드 품질과 구조로 보이는 개발자의 역량과 기여도"
+    : "프로젝트 기획, 설계, 구현, 배포 등 담당 역할"
+}
 
 ### 성과 4: 학습 경험
-새로운 기술 습득이나 개발 방법론 적용 경험
+${
+  codeAnalysis
+    ? "코드에서 보이는 고급 기술 활용이나 최신 개발 방법론 적용"
+    : "새로운 기술 습득이나 개발 방법론 적용 경험"
+}
 
-중요: 각 섹션을 명확히 구분하고, 실제 데이터에 기반하여 작성하세요. 추측하지 마세요.
+중요: 각 섹션을 명확히 구분하고, ${
+      codeAnalysis ? "실제 코드 내용에 기반하여" : "실제 데이터에 기반하여"
+    } 작성하세요.
     `;
 
-    logger.info(`${prompt} prompt`);
+    logger.info(
+      `Enhanced prompt with ${filesWithContent.length} files analyzed`
+    );
 
     const completion = await openai.chat.completions.create({
       model: "deepseek/deepseek-r1-0528-qwen3-8b:free",
       messages: [
         {
           role: "system",
-          content: `당신은 GitHub 레포지토리를 분석하는 전문가입니다. 데이터 외에 추측하지 않는다. 정보 부족시 '데이터 부족'이라 써라.
-          주어진 정보를 바탕으로 정확하고 구조화된 분석 보고서를 작성해주세요.
+          content: `당신은 GitHub 레포지토리를 분석하는 전문가입니다. 
+          ${
+            codeAnalysis
+              ? "실제 코드 내용을 분석하여 정확한 기술적 인사이트를 제공하세요."
+              : "프로젝트 구조만으로 합리적인 추론을 하되, 추측임을 명시하세요."
+          }
           
           중요한 규칙:
-          1. 제공된 형식을 정확히 따라주세요 (## 1. 프로젝트 소개, ## 2. 사용 언어 등)
-          2. 실제 데이터에만 기반하여 작성하고, 추측하지 마세요
+          1. 제공된 형식을 정확히 따라주세요
+          2. ${
+            codeAnalysis
+              ? "코드 내용에서 확인된 사실만"
+              : "실제 데이터에만 기반하여"
+          } 작성하세요
           3. 각 섹션을 완전히 작성한 후 다음 섹션으로 넘어가세요
           4. 이력서용 성과는 ### 성과 1:, ### 성과 2: 형식으로 작성하세요
           5. 간결하고 명확하게 작성하세요
-
-          모든 출력은 반드시 한국어로 작성하십시오.
-          영어, 일본어, 기호문자, 중간 언어 혼합 금지.
-          데이터가 영어라면 한글로 자연스럽게 번역 요약하십시오.
-`,
+          6. 모든 출력은 한국어로 작성하세요
+          ${
+            codeAnalysis
+              ? "7. 코드 분석 결과를 구체적으로 언급하세요"
+              : '7. 추정 내용은 "추정됨", "예상됨" 등으로 표현하세요'
+          }`,
         },
         {
           role: "user",
@@ -1218,7 +1339,9 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
       max_tokens: 4000,
     });
 
-    logger.info(`${JSON.stringify(completion)} completion`);
+    logger.info(
+      `Enhanced analysis completed with ${filesWithContent.length} files analyzed`
+    );
 
     // OpenRouter API 응답에서 실제 내용 추출
     let content: string | null = null;
@@ -1230,7 +1353,6 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
     ) {
       content = completion.choices[0].message.content;
     } else {
-      // 응답 구조가 다른 경우 전체 응답을 로깅
       logger.error({ completion }, "Unexpected API response structure");
       throw new Error("Invalid API response structure");
     }
@@ -1239,7 +1361,7 @@ UI/UX 구현, 상태 관리, API 연동 등의 기술적 문제 해결 경험
       throw new Error("No content received from AI");
     }
 
-    logger.info(`추출된 AI 응답 내용: ${content.substring(0, 200)}...`);
+    logger.info(`Enhanced AI 응답 내용: ${content.substring(0, 200)}...`);
 
     // 기본 요약 객체 생성
     const summary: RepositorySummary = {

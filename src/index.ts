@@ -8,6 +8,7 @@ import logger from "./utils/logger";
 import { testConnection, createTables } from "./config/supabase-client";
 import githubRoutes from "./routes/github-api";
 import githubMyRoutes from "./routes/github-my-api";
+import s3Routes from "./routes/s3-api";
 
 // 환경 변수 로드
 dotenv.config();
@@ -75,6 +76,9 @@ fastify.register(githubRoutes, { prefix: "/api" });
 
 // 사용자 관련 라우트 등록
 fastify.register(githubMyRoutes, { prefix: "/api" });
+
+// S3 API 라우트 등록
+fastify.register(s3Routes, { prefix: "/api" });
 
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {

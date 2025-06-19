@@ -933,7 +933,59 @@ export default async function githubRoutes(
 
         logger.info(`${importantFiles} importantFiles`);
 
-        // AI를 사용하여 향상된 요약 생성
+        // 중요한 파일들의 실제 내용 가져오기 (코드 분석용)
+        const importantFilePaths = Object.keys(importantFiles);
+        logger.info(
+          `Fetching content for ${importantFilePaths.length} important files`
+        );
+
+        const fileContents = await repositoryService.getMultipleFileContents(
+          user.access_token,
+          owner,
+          repo,
+          importantFilePaths,
+          branch || defaultBranch,
+          100 // 최대 100개 파일의 내용 분석 (기본값보다 많이)
+        );
+
+        logger.info(
+          `Successfully fetched ${
+            Object.keys(fileContents).length
+          } file contents for analysis (out of ${
+            importantFilePaths.length
+          } requested)`
+        );
+
+        // 파일 내용과 함께 중요한 파일 정보 업데이트
+        const enrichedImportantFiles: Record<string, any> = {};
+
+        // 기존 importantFiles 정보 복사
+        Object.entries(importantFiles).forEach(([filePath, fileInfo]) => {
+          enrichedImportantFiles[filePath] = Object.assign({}, fileInfo);
+        });
+
+        // 파일 내용 추가
+        Object.entries(fileContents).forEach(([filePath, fileData]) => {
+          if (enrichedImportantFiles[filePath]) {
+            enrichedImportantFiles[filePath] = Object.assign(
+              enrichedImportantFiles[filePath],
+              {
+                content: fileData.content,
+                contentSize: fileData.size,
+                detectedLanguage: fileData.language,
+                hasContent: true,
+              }
+            );
+          }
+        });
+
+        logger.info(
+          `${Object.keys(
+            enrichedImportantFiles
+          )} enriched important files with content`
+        );
+
+        // AI를 사용하여 향상된 요약 생성 (파일 내용 포함)
         const summary =
           await aiSummaryService.generateEnhancedRepositorySummary(
             `${owner}/${repo}`,
@@ -941,7 +993,7 @@ export default async function githubRoutes(
             commits,
             pullRequests,
             treeResult,
-            importantFiles,
+            enrichedImportantFiles,
             languages
           );
 
@@ -952,7 +1004,7 @@ export default async function githubRoutes(
         const performanceMetrics = {
           commits_analyzed: commits.length,
           prs_analyzed: pullRequests.length,
-          files_analyzed: Object.keys(importantFiles).length,
+          files_analyzed: Object.keys(enrichedImportantFiles).length,
           branch_total_files: branchLanguageAnalysis.totalFiles,
           branch_languages: Object.keys(branchLanguageAnalysis.languages)
             .length,
