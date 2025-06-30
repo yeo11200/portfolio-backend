@@ -3,11 +3,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import githubService from "../services/github-service";
 import repositoryService from "../services/repository-service";
 import aiSummaryService from "../services/ai-summary-service";
-import {
-  generateToken,
-  verifyToken,
-  extractTokenFromHeader,
-} from "../utils/jwt";
+import { convertToISO8601 } from "../utils";
+import { generateToken, checkAuth } from "../utils/jwt";
 import logger from "../utils/logger";
 
 // 세션 타입 정의
@@ -30,26 +27,6 @@ const errorResponse = (
     error: error instanceof Error ? error.message : "Unknown error",
   });
 };
-
-// 인증 체크 헬퍼 함수
-const checkAuth = async (request: FastifyRequest) => {
-  try {
-    const token = extractTokenFromHeader(request.headers.authorization);
-    const { userId } = verifyToken(token);
-
-    const user = await githubService.getUserById(userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
-    return user;
-  } catch (error) {
-    if (error instanceof Error && error.message === "No token provided") {
-      throw new Error("Authentication required");
-    }
-    throw error;
-  }
-};
-
 export default async function githubRoutes(
   fastify: FastifyInstance
 ): Promise<void> {
@@ -88,25 +65,37 @@ export default async function githubRoutes(
         }
 
         const tokenData = await githubService.handleGitHubCallback(code);
+
+        logger.info(
+          `Server is running on ${JSON.stringify(tokenData)} tokenData`
+        );
+
         const githubUser = await githubService.getGitHubUser(
           tokenData.access_token
         );
+
+        logger.info(
+          `Server is running on ${JSON.stringify(githubUser)} githubUser`
+        );
+
         const userId = await githubService.saveOrUpdateUser(
           githubUser,
           tokenData
         );
 
+        logger.info(`Server is running on ${userId} userId`);
+
         // JWT 토큰 생성
-        const token = generateToken(userId);
+        const token = generateToken(userId.id);
 
         return reply.send({
           status: "success",
           data: {
             token,
             user: {
-              id: userId,
+              id: userId.id,
               username: githubUser.login,
-              avatar_url: githubUser.avatar_url,
+              avatar_url: userId.profile_image_url || githubUser.avatar_url,
             },
           },
         });
@@ -506,69 +495,550 @@ export default async function githubRoutes(
           owner: string;
           repo: string;
         };
+        Querystring: {
+          branch?: string;
+        };
       }>,
       reply
     ) => {
       try {
         const { owner, repo } = request.params;
+        const { branch } = request.query;
+        logger.info(owner, request.params);
+        logger.info(repo);
         const user = await checkAuth(request);
 
-        // 레포지토리 정보 가져오기
+        logger.info(user);
+
+        // 기본 브랜치 감지
+        const defaultBranch = await repositoryService.getDefaultBranch(
+          user.access_token,
+          owner,
+          repo
+        );
+
+        logger.info(`Using default branch: ${defaultBranch}`);
+
+        const readme = await repositoryService.getRepositoryReadme(
+          user.access_token,
+          owner,
+          repo,
+          branch || defaultBranch
+        );
+
+        // 🚀 병렬 처리로 성능 최적화 (9초 → 3초)
+        const [commits, pullRequests, treeResult, branchLanguageAnalysis] =
+          await Promise.all([
+            repositoryService.getRepositoryCommits(
+              user.access_token,
+              owner,
+              repo,
+              branch || defaultBranch,
+              30
+            ),
+            repositoryService.getRepositoryPullRequests(
+              user.access_token,
+              owner,
+              repo,
+              "all",
+              20
+            ),
+            githubService.getRepositoryTree(
+              user.access_token,
+              owner,
+              repo,
+              branch || defaultBranch
+            ),
+            githubService.analyzeBranchLanguages(
+              user.access_token,
+              owner,
+              repo,
+              branch || defaultBranch
+            ),
+          ]);
+
+        // 브랜치 언어 분석 결과를 AI 서비스에서 사용할 형식으로 변환
+        const languages: Record<string, number> = {};
+        Object.entries(branchLanguageAnalysis.languages).forEach(
+          ([lang, data]) => {
+            // 파일 개수를 가중치로 사용 (실제 바이트 수 대신)
+            languages[lang] = data.count * 1000; // 파일 개수에 1000을 곱해서 바이트 수처럼 표현
+          }
+        );
+
+        // 중요 파일들 가져오기 (모든 소스 코드 파일 분석)
+        let importantFiles: { [key: string]: string } = {};
+        if (treeResult && Array.isArray(treeResult)) {
+          try {
+            const totalFiles = treeResult.filter(
+              (item) => item.type === "blob"
+            ).length;
+
+            logger.info(
+              { totalFiles },
+              "Analyzing all source code files (excluding libraries and media)"
+            );
+
+            // 분석할 파일 필터링 (라이브러리, 미디어, 불필요한 파일 제외)
+            const relevantFiles = treeResult.filter((item) => {
+              if (item.type !== "blob") return false;
+
+              const path = item.path.toLowerCase();
+
+              // 제외할 라이브러리/패키지 폴더 패턴 (각 언어별)
+              const excludeLibraryPatterns = [
+                // JavaScript/Node.js
+                /node_modules\//,
+                /\.npm\//,
+                /\.yarn\//,
+                /bower_components\//,
+
+                // Python
+                /venv\//,
+                /env\//,
+                /\.venv\//,
+                /\.env\//,
+                /__pycache__\//,
+                /\.pytest_cache\//,
+                /site-packages\//,
+                /dist-packages\//,
+                /\.tox\//,
+
+                // Java/Kotlin/Scala
+                /target\//,
+                /\.gradle\//,
+                /gradle\//,
+                /\.m2\//,
+                /build\//,
+                /out\//,
+                /classes\//,
+
+                // .NET/C#
+                /bin\//,
+                /obj\//,
+                /packages\//,
+                /\.nuget\//,
+
+                // Ruby
+                /vendor\//,
+                /\.bundle\//,
+                /gems\//,
+
+                // PHP
+                /vendor\//,
+                /composer\//,
+
+                // Go
+                /vendor\//,
+                /\.mod\//,
+
+                // Rust
+                /target\//,
+                /\.cargo\//,
+
+                // Swift
+                /\.build\//,
+                /packages\//,
+                /\.swiftpm\//,
+
+                // Flutter/Dart
+                /\.dart_tool\//,
+                /\.pub\//,
+                /build\//,
+
+                // iOS/macOS
+                /pods\//,
+                /\.cocoapods\//,
+                /carthage\//,
+                /derived_data\//,
+
+                // Android
+                /\.gradle\//,
+                /build\//,
+                /\.android\//,
+
+                // 빌드/배포 폴더
+                /dist\//,
+                /build\//,
+                /output\//,
+                /release\//,
+                /debug\//,
+                /coverage\//,
+                /\.next\//,
+                /\.nuxt\//,
+                /\.output\//,
+                /\.vercel\//,
+                /\.netlify\//,
+
+                // 캐시/임시 폴더
+                /\.cache\//,
+                /\.tmp\//,
+                /temp\//,
+                /tmp\//,
+                /\.temp\//,
+
+                // 버전 관리
+                /\.git\//,
+                /\.svn\//,
+                /\.hg\//,
+
+                // IDE/에디터 설정
+                /\.vscode\//,
+                /\.idea\//,
+                /\.eclipse\//,
+                /\.settings\//,
+                /\.project\//,
+                /\.classpath\//,
+
+                // 로그 파일
+                /logs\//,
+                /\.log\//,
+              ];
+
+              // 제외할 미디어/바이너리 파일 확장자
+              const excludeExtensions = [
+                // 이미지
+                "jpg",
+                "jpeg",
+                "png",
+                "gif",
+                "bmp",
+                "svg",
+                "ico",
+                "webp",
+                "tiff",
+                "tif",
+                "raw",
+                "psd",
+                "ai",
+                "eps",
+                "indd",
+                "sketch",
+
+                // 비디오
+                "mp4",
+                "avi",
+                "mov",
+                "wmv",
+                "flv",
+                "webm",
+                "mkv",
+                "m4v",
+                "3gp",
+                "mpg",
+                "mpeg",
+                "ogv",
+                "asf",
+                "rm",
+                "rmvb",
+
+                // 오디오
+                "mp3",
+                "wav",
+                "flac",
+                "aac",
+                "ogg",
+                "wma",
+                "m4a",
+                "opus",
+                "aiff",
+
+                // 폰트
+                "ttf",
+                "woff",
+                "woff2",
+                "eot",
+                "otf",
+                "fon",
+
+                // 압축 파일
+                "zip",
+                "rar",
+                "7z",
+                "tar",
+                "gz",
+                "bz2",
+                "xz",
+                "lz",
+                "lzma",
+                "cab",
+                "iso",
+                "dmg",
+                "pkg",
+                "deb",
+                "rpm",
+
+                // 실행 파일
+                "exe",
+                "dll",
+                "so",
+                "dylib",
+                "app",
+                "deb",
+                "rpm",
+                "msi",
+                "bin",
+                "dat",
+                "db",
+                "sqlite",
+                "sqlite3",
+
+                // 문서 (바이너리)
+                "pdf",
+                "doc",
+                "docx",
+                "xls",
+                "xlsx",
+                "ppt",
+                "pptx",
+                "odt",
+                "ods",
+                "odp",
+                "rtf",
+
+                // 기타 바이너리
+                "class",
+                "jar",
+                "war",
+                "ear",
+                "pyc",
+                "pyo",
+                "o",
+                "obj",
+                "lib",
+                "a",
+                "la",
+                "lo",
+                "slo",
+                "ko",
+                "mod",
+
+                // 패키지 락 파일 (너무 크므로 제외)
+                "lock", // package-lock.json, yarn.lock, Gemfile.lock 등
+              ];
+
+              // 라이브러리/패키지 폴더 패턴 체크
+              if (
+                excludeLibraryPatterns.some((pattern) => pattern.test(path))
+              ) {
+                return false;
+              }
+
+              // 확장자 체크
+              const extension = path.split(".").pop();
+              if (extension && excludeExtensions.includes(extension)) {
+                return false;
+              }
+
+              // 특정 파일명 제외 (대소문자 구분 없이)
+              const fileName = path.split("/").pop() || "";
+              const excludeFileNames = [
+                "package-lock.json",
+                "yarn.lock",
+                "composer.lock",
+                "gemfile.lock",
+                "pipfile.lock",
+                "poetry.lock",
+                "cargo.lock",
+                "go.sum",
+                ".ds_store",
+                "thumbs.db",
+                "desktop.ini",
+              ];
+
+              if (
+                excludeFileNames.some((name) =>
+                  fileName.toLowerCase().includes(name.toLowerCase())
+                )
+              ) {
+                return false;
+              }
+
+              return true;
+            });
+
+            logger.info(
+              {
+                totalFiles,
+                relevantFiles: relevantFiles.length,
+                filteredOut: totalFiles - relevantFiles.length,
+              },
+              "Files filtered for analysis"
+            );
+
+            // 파일 크기 제한을 위해 병렬로 처리하되 배치로 나누어 처리
+            const batchSize = 15; // 한 번에 15개씩 처리 (더 많은 파일 처리)
+            const batches = [];
+
+            for (let i = 0; i < relevantFiles.length; i += batchSize) {
+              batches.push(relevantFiles.slice(i, i + batchSize));
+            }
+
+            for (const batch of batches) {
+              const batchPromises = batch.map(async (file) => {
+                try {
+                  const content = await githubService.getFileContent(
+                    user.access_token,
+                    owner,
+                    repo,
+                    file.path,
+                    defaultBranch
+                  );
+
+                  // 파일 크기 제한 (200KB 이하만 - 더 큰 파일도 허용)
+                  if (content && content.length < 200000) {
+                    return { path: file.path, content };
+                  } else if (content) {
+                    logger.warn(
+                      { path: file.path, size: content.length },
+                      "File too large, skipping"
+                    );
+                  }
+                  return null;
+                } catch (error) {
+                  logger.warn(
+                    { error, path: file.path },
+                    "Failed to fetch file content"
+                  );
+                  return null;
+                }
+              });
+
+              const batchResults = await Promise.all(batchPromises);
+              batchResults.forEach((result) => {
+                if (result) {
+                  importantFiles[result.path] = result.content;
+                }
+              });
+
+              // 배치 간 짧은 대기 (API 제한 방지)
+              if (batches.indexOf(batch) < batches.length - 1) {
+                await new Promise((resolve) => setTimeout(resolve, 50)); // 대기 시간 단축
+              }
+            }
+
+            logger.info(
+              {
+                fileCount: Object.keys(importantFiles).length,
+                totalFiles,
+                relevantFiles: relevantFiles.length,
+                analysisMode: "all_source_files",
+              },
+              "Source files fetched for analysis"
+            );
+          } catch (error) {
+            logger.error({ error }, "Failed to fetch files");
+          }
+        }
+
+        logger.info(`${importantFiles} importantFiles`);
+
+        // 중요한 파일들의 실제 내용 가져오기 (코드 분석용)
+        const importantFilePaths = Object.keys(importantFiles);
+        logger.info(
+          `Fetching content for ${importantFilePaths.length} important files`
+        );
+
+        const fileContents = await repositoryService.getMultipleFileContents(
+          user.access_token,
+          owner,
+          repo,
+          importantFilePaths,
+          branch || defaultBranch,
+          100 // 최대 100개 파일의 내용 분석 (기본값보다 많이)
+        );
+
+        logger.info(
+          `Successfully fetched ${
+            Object.keys(fileContents).length
+          } file contents for analysis (out of ${
+            importantFilePaths.length
+          } requested)`
+        );
+
+        // 파일 내용과 함께 중요한 파일 정보 업데이트
+        const enrichedImportantFiles: Record<string, any> = {};
+
+        // 기존 importantFiles 정보 복사
+        Object.entries(importantFiles).forEach(([filePath, fileInfo]) => {
+          enrichedImportantFiles[filePath] = Object.assign({}, fileInfo);
+        });
+
+        // 파일 내용 추가
+        Object.entries(fileContents).forEach(([filePath, fileData]) => {
+          if (enrichedImportantFiles[filePath]) {
+            enrichedImportantFiles[filePath] = Object.assign(
+              enrichedImportantFiles[filePath],
+              {
+                content: fileData.content,
+                contentSize: fileData.size,
+                detectedLanguage: fileData.language,
+                hasContent: true,
+              }
+            );
+          }
+        });
+
+        logger.info(
+          `${Object.keys(
+            enrichedImportantFiles
+          )} enriched important files with content`
+        );
+
+        // AI를 사용하여 향상된 요약 생성 (파일 내용 포함)
+        const summary =
+          await aiSummaryService.generateEnhancedRepositorySummary(
+            `${owner}/${repo}`,
+            readme,
+            commits,
+            pullRequests,
+            treeResult,
+            enrichedImportantFiles,
+            languages
+          );
+
+        // 브랜치 이름 설정
+        summary.branch_name = branch || defaultBranch;
+
+        // 성능 메트릭 준비
+        const performanceMetrics = {
+          commits_analyzed: commits.length,
+          prs_analyzed: pullRequests.length,
+          files_analyzed: Object.keys(enrichedImportantFiles).length,
+          branch_total_files: branchLanguageAnalysis.totalFiles,
+          branch_languages: Object.keys(branchLanguageAnalysis.languages)
+            .length,
+          top_languages: Object.entries(branchLanguageAnalysis.languages)
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, 5)
+            .map(([lang, data]) => ({
+              language: lang,
+              file_count: data.count,
+              percentage: data.percentage,
+            })),
+        };
+
+        // 요약 저장을 위한 레포지토리 정보 처리
         const repository = await repositoryService.getRepository(
           user.access_token,
           owner,
           repo
         );
 
-        // 레포지토리 저장 (없으면 새로 생성)
-        const repositoryId = await repositoryService.saveRepository(
-          user.id,
-          repository
-        );
+        const repositoryId = await repositoryService.saveRepository(user.id, {
+          ...repository,
+          branch_name: branch || defaultBranch,
+        });
 
-        // README, 커밋, PR 정보 수집
-        const readme = await repositoryService.getRepositoryReadme(
-          user.access_token,
-          owner,
-          repo
-        );
-
-        const commits = await repositoryService.getRepositoryCommits(
-          user.access_token,
-          owner,
-          repo,
-          "main",
-          50
-        );
-
-        const pullRequests = await repositoryService.getRepositoryPullRequests(
-          user.access_token,
-          owner,
-          repo,
-          "all",
-          30
-        );
-
-        // AI 요약 생성
-        const summary = await aiSummaryService.generateRepositorySummary(
-          repository.name,
-          readme,
-          commits,
-          pullRequests
-        );
-
-        // 요약 저장
         const summaryId = await aiSummaryService.saveRepositorySummary(
           repositoryId,
-          summary
+          branch || defaultBranch,
+          summary,
+          performanceMetrics
         );
 
         return reply.send({
           status: "success",
-          data: {
-            summary_id: summaryId,
-            summary,
-          },
         });
       } catch (error) {
         if (
@@ -590,7 +1060,7 @@ export default async function githubRoutes(
     }
   );
 
-  // 저장된 요약 가져오기
+  // 저장된 요약 가져오기 (브랜치별)
   fastify.get(
     "/github/repos/:owner/:repo/summary",
     async (
@@ -599,11 +1069,15 @@ export default async function githubRoutes(
           owner: string;
           repo: string;
         };
+        Querystring: {
+          branch?: string;
+        };
       }>,
       reply
     ) => {
       try {
         const { owner, repo } = request.params;
+        const { branch = "main" } = request.query;
         const user = await checkAuth(request);
 
         // 레포지토리 ID 찾기
@@ -611,34 +1085,45 @@ export default async function githubRoutes(
           user.id,
           "updated_at",
           "desc",
-          repo
+          repo,
+          branch || "main"
         );
+
+        logger.info(repositories);
 
         const repository = repositories.find(
           (r) => r.owner === owner && r.name === repo
         );
 
         if (!repository) {
-          return reply.status(404).send({
+          return reply.status(500).send({
             status: "error",
             message: "Repository not found",
           });
         }
 
         const summary = await aiSummaryService.getRepositorySummary(
-          repository.id
+          repository.id,
+          branch
         );
 
         if (!summary) {
           return reply.status(404).send({
             status: "error",
-            message: "Summary not found",
+            message: `Summary not found for branch '${branch}'`,
           });
         }
 
         return reply.send({
           status: "success",
-          data: summary,
+          data: {
+            ...summary,
+            repository: {
+              owner: repository.owner,
+              name: repository.name,
+              branch: branch,
+            },
+          },
         });
       } catch (error) {
         if (
@@ -656,9 +1141,9 @@ export default async function githubRoutes(
     }
   );
 
-  // 요약을 Markdown으로 내보내기
+  // 레포지토리의 모든 브랜치 요약 목록 가져오기
   fastify.get(
-    "/github/repos/:owner/:repo/summary/export/markdown",
+    "/github/repos/:owner/:repo/summaries",
     async (
       request: FastifyRequest<{
         Params: {
@@ -691,14 +1176,92 @@ export default async function githubRoutes(
           });
         }
 
-        const summary = await aiSummaryService.getRepositorySummary(
+        const summaries = await aiSummaryService.getRepositorySummariesByRepo(
           repository.id
+        );
+
+        return reply.send({
+          status: "success",
+          data: {
+            repository: {
+              owner: repository.owner,
+              name: repository.name,
+            },
+            summaries: summaries.map((summary) => ({
+              ...summary,
+              branch: summary.branch_name,
+            })),
+            total: summaries.length,
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "Authentication required" ||
+            error.message === "Invalid token")
+        ) {
+          return reply.status(401).send({
+            status: "error",
+            message: error.message,
+          });
+        }
+        return errorResponse(
+          reply,
+          error,
+          "Error fetching repository summaries"
+        );
+      }
+    }
+  );
+
+  // 요약을 Markdown으로 내보내기 (브랜치별)
+  fastify.get(
+    "/github/repos/:owner/:repo/summary/export/markdown",
+    async (
+      request: FastifyRequest<{
+        Params: {
+          owner: string;
+          repo: string;
+        };
+        Querystring: {
+          branch?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const { owner, repo } = request.params;
+        const { branch = "main" } = request.query;
+        const user = await checkAuth(request);
+
+        // 레포지토리 ID 찾기
+        const repositories = await repositoryService.getSavedRepositories(
+          user.id,
+          "updated_at",
+          "desc",
+          repo
+        );
+
+        const repository = repositories.find(
+          (r) => r.owner === owner && r.name === repo
+        );
+
+        if (!repository) {
+          return reply.status(404).send({
+            status: "error",
+            message: "Repository not found",
+          });
+        }
+
+        const summary = await aiSummaryService.getRepositorySummary(
+          repository.id,
+          branch
         );
 
         if (!summary) {
           return reply.status(404).send({
             status: "error",
-            message: "Summary not found",
+            message: `Summary not found for branch '${branch}'`,
           });
         }
 
@@ -708,7 +1271,7 @@ export default async function githubRoutes(
           .header("Content-Type", "text/markdown")
           .header(
             "Content-Disposition",
-            `attachment; filename="${repo}-summary.md"`
+            `attachment; filename="${repo}-${branch}-summary.md"`
           )
           .send(markdown);
       } catch (error) {
@@ -731,7 +1294,7 @@ export default async function githubRoutes(
     }
   );
 
-  // 요약을 Notion 블록으로 내보내기
+  // 요약을 Notion 블록으로 내보내기 (브랜치별)
   fastify.get(
     "/github/repos/:owner/:repo/summary/export/notion",
     async (
@@ -740,11 +1303,15 @@ export default async function githubRoutes(
           owner: string;
           repo: string;
         };
+        Querystring: {
+          branch?: string;
+        };
       }>,
       reply
     ) => {
       try {
         const { owner, repo } = request.params;
+        const { branch = "main" } = request.query;
         const user = await checkAuth(request);
 
         // 레포지토리 ID 찾기
@@ -767,13 +1334,14 @@ export default async function githubRoutes(
         }
 
         const summary = await aiSummaryService.getRepositorySummary(
-          repository.id
+          repository.id,
+          branch
         );
 
         if (!summary) {
           return reply.status(404).send({
             status: "error",
-            message: "Summary not found",
+            message: `Summary not found for branch '${branch}'`,
           });
         }
 
@@ -783,6 +1351,11 @@ export default async function githubRoutes(
         return reply.send({
           status: "success",
           data: {
+            repository: {
+              owner,
+              name: repo,
+              branch,
+            },
             notion_blocks: notionBlocks,
           },
         });
@@ -802,6 +1375,118 @@ export default async function githubRoutes(
           error,
           "Error exporting summary as notion blocks"
         );
+      }
+    }
+  );
+
+  // Get All Commits (using GitHub Search API)
+  fastify.get(
+    "/github/commits/all",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          since?: string;
+          until?: string;
+          per_page?: string;
+          page?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const user = await checkAuth(request);
+        const { since, until, per_page = "30", page = "1" } = request.query;
+
+        // 날짜 형식 변환
+        const convertedSince = since ? convertToISO8601(since) : undefined;
+        const convertedUntil = until
+          ? convertToISO8601(until, true)
+          : undefined;
+
+        // 모든 사용자 커밋 가져오기
+        const result = await githubService.getAllUserCommits(
+          user.access_token,
+          user.username,
+          {
+            since: convertedSince,
+            until: convertedUntil,
+            perPage: parseInt(per_page),
+            page: parseInt(page),
+          }
+        );
+
+        return reply.send({
+          status: "success",
+          data: {
+            commits: result.commits,
+            totalCount: result.totalCount,
+            hasMore: result.hasMore,
+            pagination: {
+              page: parseInt(page),
+              perPage: parseInt(per_page),
+            },
+          },
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "Authentication required" ||
+            error.message === "Invalid token")
+        ) {
+          return reply.status(401).send({
+            status: "error",
+            message: error.message,
+          });
+        }
+        return errorResponse(reply, error, "Error fetching all user commits");
+      }
+    }
+  );
+
+  // 사용자의 커밋 통계 가져오기
+  fastify.get(
+    "/github/commits/stats",
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          since?: string;
+          until?: string;
+        };
+      }>,
+      reply
+    ) => {
+      try {
+        const { since, until } = request.query;
+        const user = await checkAuth(request);
+
+        // GitHub 사용자 정보 가져오기
+        const githubUser = await githubService.getGitHubUser(user.access_token);
+
+        const stats = await githubService.getUserCommitStats(
+          user.access_token,
+          githubUser.login,
+          {
+            since: since ? convertToISO8601(since) : undefined,
+            until: until ? convertToISO8601(until, true) : undefined,
+          }
+        );
+
+        return reply.send({
+          status: "success",
+          data: stats,
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error.message === "Authentication required" ||
+            error.message === "Invalid token")
+        ) {
+          return reply.status(401).send({
+            status: "error",
+            message: error.message,
+          });
+        }
+        return errorResponse(reply, error, "Error fetching user commit stats");
       }
     }
   );

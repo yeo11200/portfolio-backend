@@ -1,6 +1,8 @@
 import jwt from "jsonwebtoken";
 import logger from "./logger";
 import dotenv from "dotenv";
+import { FastifyRequest } from "fastify";
+import githubService from "../services/github-service";
 
 dotenv.config();
 
@@ -76,10 +78,34 @@ export const getUserIdFromToken = (token: string): string | null => {
   }
 };
 
+// 인증 체크 헬퍼 함수
+export const checkAuth = async (request: FastifyRequest) => {
+  try {
+    logger.info(request.headers.authorization);
+    const token = extractTokenFromHeader(request.headers.authorization);
+    const { userId } = verifyToken(token);
+
+    logger.info(`${userId} userId`);
+
+    const user = await githubService.getUserById(userId);
+    if (!user) {
+      throw new Error("User not found");
+    }
+    return user;
+  } catch (error) {
+    if (error instanceof Error && error.message === "No token provided") {
+      throw new Error("Authentication required");
+    }
+
+    throw error;
+  }
+};
+
 export default {
   generateToken,
   verifyToken,
   extractTokenFromHeader,
   isTokenExpired,
   getUserIdFromToken,
+  checkAuth,
 };

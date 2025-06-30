@@ -14,6 +14,7 @@ export interface Repository {
   language: string;
   stargazers_count: number;
   forks_count: number;
+  branch_name?: string;
 }
 
 export interface RepositoryContent {
@@ -46,7 +47,7 @@ export interface PullRequest {
 }
 
 /**
- * 사용자의 GitHub 레포지토리 목록 가져오기
+ * 사용자의 GitHub 레포지토리 목록 가져오기 (참여한 모든 레포지토리 포함)
  */
 export const getUserRepositories = async (
   accessToken: string,
@@ -55,28 +56,65 @@ export const getUserRepositories = async (
   search: string = ""
 ): Promise<Repository[]> => {
   try {
-    let url = "https://api.github.com/user/repos";
     const params: Record<string, string> = {
       sort,
       direction,
       per_page: "100",
+      // 소유한 레포지토리 + 협업하는 레포지토리 + 조직 레포지토리 모두 포함
+      affiliation: "owner,collaborator,organization_member",
     };
 
+    // 검색어가 있으면 GitHub Search API 사용
+    let url = "https://api.github.com/user/repos";
     if (search) {
-      params.q = search;
+      url = "https://api.github.com/search/repositories";
+      params.q = `${search} user:@me`;
+      delete params.affiliation; // Search API에서는 affiliation 파라미터 사용 불가
     }
 
     const response = await axios.get(url, {
       params,
       headers: {
         Authorization: `token ${accessToken}`,
+        Accept: "application/vnd.github.v3+json",
       },
     });
 
-    return response.data;
+    // Search API 사용시 response.data.items, 일반 API 사용시 response.data
+    const repositories = search ? response.data.items : response.data;
+
+    return repositories;
   } catch (error) {
-    logger.error({ error }, "Error fetching user repositories");
+    logger.error({ error, search }, "Error fetching user repositories");
     throw new Error("Failed to fetch user repositories");
+  }
+};
+
+/**
+ * 레포지토리의 기본 브랜치 감지
+ */
+export const getDefaultBranch = async (
+  accessToken: string,
+  owner: string,
+  repo: string
+): Promise<string> => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}`,
+      {
+        headers: {
+          Authorization: `token ${accessToken}`,
+        },
+      }
+    );
+
+    return response.data.default_branch || "main";
+  } catch (error) {
+    logger.error(
+      { error, owner, repo },
+      "Error fetching default branch, using 'main'"
+    );
+    return "main";
   }
 };
 
@@ -111,22 +149,50 @@ export const getRepository = async (
 export const getRepositoryReadme = async (
   accessToken: string,
   owner: string,
-  repo: string
+  repo: string,
+  ref: string = "main"
 ): Promise<string> => {
   try {
     const response = await axios.get(
       `https://api.github.com/repos/${owner}/${repo}/readme`,
       {
+        params: { ref },
         headers: {
           Authorization: `token ${accessToken}`,
-          Accept: "application/vnd.github.v3.raw",
+          Accept: "application/vnd.github+json",
         },
       }
     );
 
-    return response.data;
+    if (response.data.content && response.data.encoding === "base64") {
+      // Base64 디코딩하여 실제 텍스트 내용 반환
+      return Buffer.from(response.data.content, "base64").toString("utf-8");
+    }
+
+    // encoding이 base64가 아닌 경우 (드물지만)
+    return response.data.content || "";
   } catch (error) {
-    logger.error({ error, owner, repo }, "Error fetching repository README");
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (ref === "main") {
+      logger.warn(
+        { owner, repo },
+        "README not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryReadme(accessToken, owner, repo, "master");
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo },
+          "Error fetching repository README from master branch"
+        );
+        return "";
+      }
+    }
+
+    logger.error(
+      { error, owner, repo, ref },
+      "Error fetching repository README"
+    );
     return "";
   }
 };
@@ -179,8 +245,31 @@ export const getRepositoryContents = async (
 
     return response.data;
   } catch (error) {
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (ref === "main") {
+      logger.warn(
+        { owner, repo, path },
+        "Contents not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryContents(
+          accessToken,
+          owner,
+          repo,
+          path,
+          "master"
+        );
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo, path },
+          "Error fetching repository contents from master branch"
+        );
+        throw new Error("Failed to fetch repository contents");
+      }
+    }
+
     logger.error(
-      { error, owner, repo, path },
+      { error, owner, repo, path, ref },
       "Error fetching repository contents"
     );
     throw new Error("Failed to fetch repository contents");
@@ -213,6 +302,29 @@ export const getRepositoryCommits = async (
 
     return response.data;
   } catch (error) {
+    // main 브랜치에서 실패하면 master 브랜치로 재시도
+    if (branch === "main") {
+      logger.warn(
+        { owner, repo },
+        "Commits not found in main branch, trying master branch"
+      );
+      try {
+        return await getRepositoryCommits(
+          accessToken,
+          owner,
+          repo,
+          "master",
+          perPage
+        );
+      } catch (masterError) {
+        logger.error(
+          { error: masterError, owner, repo },
+          "Error fetching repository commits from master branch"
+        );
+        throw new Error("Failed to fetch repository commits");
+      }
+    }
+
     logger.error(
       { error, owner, repo, branch },
       "Error fetching repository commits"
@@ -276,9 +388,10 @@ export const saveRepository = async (
           language: repo.language,
           stars_count: repo.stargazers_count,
           forks_count: repo.forks_count,
+          branch_name: repo.branch_name,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "user_id,github_repo_id" }
+        { onConflict: "user_id,github_repo_id,branch_name" }
       )
       .select("id")
       .single();
@@ -302,13 +415,15 @@ export const getSavedRepositories = async (
   userId: string,
   sort: string = "updated_at",
   direction: string = "desc",
-  search: string = ""
+  search: string = "",
+  branchName?: string
 ): Promise<any[]> => {
   try {
     let query = supabaseClient
       .from("repositories")
       .select("*")
       .eq("user_id", userId)
+      .eq("branch_name", branchName)
       .order(sort, { ascending: direction === "asc" });
 
     if (search) {
@@ -401,6 +516,228 @@ export const savePullRequests = async (
   }
 };
 
+/**
+ * 개별 파일의 실제 내용 가져오기 (코드 분석용)
+ */
+export const getFileContent = async (
+  accessToken: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string = "main"
+): Promise<{ content: string; encoding: string; size: number } | null> => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/repos/${owner}/${repo}/contents/${path}`,
+      {
+        params: { ref },
+        headers: {
+          Authorization: `token ${accessToken}`,
+          Accept: "application/vnd.github+json",
+        },
+      }
+    );
+
+    const fileData = response.data;
+
+    // 파일이 너무 크면 스킵 (1MB 이상)
+    if (fileData.size > 1024 * 1024) {
+      logger.warn(
+        { owner, repo, path, size: fileData.size },
+        "File too large, skipping content analysis"
+      );
+      return null;
+    }
+
+    // 바이너리 파일이거나 content가 없으면 스킵
+    if (!fileData.content || fileData.type !== "file") {
+      logger.warn(
+        {
+          owner,
+          repo,
+          path,
+          type: fileData.type,
+          hasContent: !!fileData.content,
+        },
+        "File has no content or is not a file type, skipping"
+      );
+      return null;
+    }
+
+    let content = "";
+    if (fileData.encoding === "base64") {
+      content = Buffer.from(fileData.content, "base64").toString("utf-8");
+    } else {
+      content = fileData.content;
+    }
+
+    logger.info(
+      { path, size: fileData.size, encoding: fileData.encoding },
+      "File content successfully retrieved"
+    );
+
+    return {
+      content,
+      encoding: fileData.encoding,
+      size: fileData.size,
+    };
+  } catch (error) {
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : "Unknown error",
+        owner,
+        repo,
+        path,
+        ref,
+      },
+      "Error fetching file content"
+    );
+    return null;
+  }
+};
+
+/**
+ * 여러 파일의 내용을 한번에 가져오기 (배치 처리)
+ */
+export const getMultipleFileContents = async (
+  accessToken: string,
+  owner: string,
+  repo: string,
+  filePaths: string[],
+  ref: string = "main",
+  maxFiles: number = 100 // 한번에 처리할 최대 파일 수를 100개로 증가
+): Promise<
+  Record<string, { content: string; size: number; language?: string }>
+> => {
+  const results: Record<
+    string,
+    { content: string; size: number; language?: string }
+  > = {};
+
+  // 파일 수 제한
+  const limitedPaths = filePaths.slice(0, maxFiles);
+
+  logger.info(
+    `Processing ${limitedPaths.length} files out of ${filePaths.length} total files`
+  );
+
+  // 병렬로 파일 내용 가져오기 (동시 요청 수 제한)
+  const batchSize = 8; // 배치 크기를 8로 줄여서 API 안정성 확보
+  for (let i = 0; i < limitedPaths.length; i += batchSize) {
+    const batch = limitedPaths.slice(i, i + batchSize);
+
+    const batchPromises = batch.map(async (filePath) => {
+      const fileContent = await getFileContent(
+        accessToken,
+        owner,
+        repo,
+        filePath,
+        ref
+      );
+      if (fileContent) {
+        const language = getLanguageFromExtension(filePath);
+        results[filePath] = {
+          content: fileContent.content,
+          size: fileContent.size,
+          language,
+        };
+        return { filePath, success: true };
+      }
+      return { filePath, success: false };
+    });
+
+    logger.info(
+      `Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(
+        limitedPaths.length / batchSize
+      )} (${batch.length} files)`
+    );
+
+    const batchResults = await Promise.all(batchPromises);
+
+    const successCount = batchResults.filter((r) => r.success).length;
+    logger.info(
+      `Batch completed: ${successCount}/${batch.length} files processed successfully`
+    );
+
+    // API 레이트 리미트 방지를 위한 딜레이
+    if (i + batchSize < limitedPaths.length) {
+      await new Promise((resolve) => setTimeout(resolve, 150)); // 딜레이 증가
+    }
+  }
+
+  logger.info(
+    `File content processing completed: ${Object.keys(results).length}/${
+      limitedPaths.length
+    } files successfully processed`
+  );
+
+  return results;
+};
+
+/**
+ * 파일 확장자로 언어 추정
+ */
+const getLanguageFromExtension = (filePath: string): string => {
+  const extension = filePath.split(".").pop()?.toLowerCase() || "";
+
+  const languageMap: Record<string, string> = {
+    js: "JavaScript",
+    jsx: "JavaScript",
+    ts: "TypeScript",
+    tsx: "TypeScript",
+    py: "Python",
+    java: "Java",
+    cpp: "C++",
+    c: "C",
+    cs: "C#",
+    php: "PHP",
+    rb: "Ruby",
+    go: "Go",
+    rs: "Rust",
+    swift: "Swift",
+    kt: "Kotlin",
+    scala: "Scala",
+    html: "HTML",
+    css: "CSS",
+    scss: "SCSS",
+    sass: "Sass",
+    less: "Less",
+    vue: "Vue",
+    svelte: "Svelte",
+    json: "JSON",
+    xml: "XML",
+    yaml: "YAML",
+    yml: "YAML",
+    toml: "TOML",
+    md: "Markdown",
+    sql: "SQL",
+    sh: "Shell",
+    bash: "Bash",
+    zsh: "Zsh",
+    fish: "Fish",
+    ps1: "PowerShell",
+    r: "R",
+    matlab: "MATLAB",
+    dart: "Dart",
+    lua: "Lua",
+    perl: "Perl",
+    haskell: "Haskell",
+    clj: "Clojure",
+    elm: "Elm",
+    ex: "Elixir",
+    erl: "Erlang",
+    f90: "Fortran",
+    jl: "Julia",
+    nim: "Nim",
+    pas: "Pascal",
+    pl: "Perl",
+    pro: "Prolog",
+    rkt: "Racket",
+  };
+
+  return languageMap[extension] || "Unknown";
+};
+
 export default {
   getUserRepositories,
   getRepository,
@@ -413,4 +750,7 @@ export default {
   getSavedRepositories,
   saveCommitHistory,
   savePullRequests,
+  getDefaultBranch,
+  getFileContent,
+  getMultipleFileContents,
 };

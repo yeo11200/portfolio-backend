@@ -5,8 +5,10 @@ import voteRoutes from "./routes/vote-api";
 import scrapeJob, { runScrapeJob, runAnalysisJob } from "./jobs/scrape-job";
 import cleanupJob from "./jobs/cleanup-job";
 import logger from "./utils/logger";
-import { testConnection } from "./config/supabase-client";
+import { testConnection, createTables } from "./config/supabase-client";
 import githubRoutes from "./routes/github-api";
+import githubMyRoutes from "./routes/github-my-api";
+import fastifyMultipart from "@fastify/multipart";
 
 // 환경 변수 로드
 dotenv.config();
@@ -27,7 +29,7 @@ const fastify = Fastify({
     },
   },
   // JSON 파서 설정 - 빈 본문 허용
-  bodyLimit: 1048576, // 1MiB
+  bodyLimit: 10 * 1024 * 1024, // 10MiB (프로필 이미지 업로드를 위해 증가)
   ajv: {
     customOptions: {
       removeAdditional: false,
@@ -72,6 +74,9 @@ fastify.register(voteRoutes, { prefix: "/api" });
 // 신규 프로젝트인, 깃헙 레포 유지 관리 라우트 등록
 fastify.register(githubRoutes, { prefix: "/api" });
 
+// 사용자 관련 라우트 등록
+fastify.register(githubMyRoutes, { prefix: "/api" });
+
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {
   try {
@@ -81,6 +86,17 @@ const startServer = async (): Promise<void> => {
       logger.error(
         "Supabase connection test failed, but continuing server startup"
       );
+    }
+
+    // 데이터베이스 테이블 생성
+    logger.info("Initializing database tables...");
+    const tablesCreated = await createTables();
+    if (!tablesCreated) {
+      logger.error(
+        "Failed to create database tables, but continuing server startup"
+      );
+    } else {
+      logger.info("Database tables initialized successfully");
     }
 
     // 작업 스케줄러 시작
