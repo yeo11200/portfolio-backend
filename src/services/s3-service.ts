@@ -3,6 +3,10 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  CreateBucketCommand,
+  HeadBucketCommand,
+  PutBucketCorsCommand,
+  PutBucketPolicyCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import logger from "../utils/logger";
@@ -62,12 +66,152 @@ export interface PresignedUrlOptions {
   expiresIn?: number; // seconds
 }
 
+interface BucketCreationResult {
+  created: boolean;
+  existed: boolean;
+  error?: string;
+}
+
 /**
- * 파일을 S3에 직접 업로드
+ * S3 버킷 존재 여부 확인
+ */
+const checkBucketExists = async (bucketName: string): Promise<boolean> => {
+  try {
+    const headBucketCommand = new HeadBucketCommand({
+      Bucket: bucketName,
+    });
+
+    await s3Client.send(headBucketCommand);
+    return true;
+  } catch (error: any) {
+    if (error.name === "NotFound" || error.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    // 다른 에러는 재발생시킴 (권한 문제 등)
+    throw error;
+  }
+};
+
+/**
+ * S3 버킷 생성 및 설정
+ */
+const createBucketWithConfiguration = async (
+  bucketName: string
+): Promise<BucketCreationResult> => {
+  try {
+    if (!AWS_REGION) {
+      throw new Error("AWS_REGION is not configured");
+    }
+
+    // 버킷 생성
+    const createBucketCommand = new CreateBucketCommand({
+      Bucket: bucketName,
+      CreateBucketConfiguration:
+        AWS_REGION !== "us-east-1"
+          ? {
+              LocationConstraint: AWS_REGION as any, // AWS SDK 타입 이슈로 인한 타입 캐스팅
+            }
+          : undefined, // us-east-1은 LocationConstraint가 필요 없음
+    });
+
+    await s3Client.send(createBucketCommand);
+    logger.info(
+      { bucketName, region: AWS_REGION },
+      "S3 bucket created successfully"
+    );
+
+    // CORS 설정 (웹 애플리케이션에서 직접 업로드 가능하도록)
+    const corsConfiguration = {
+      CORSRules: [
+        {
+          AllowedHeaders: ["*"],
+          AllowedMethods: ["GET", "PUT", "POST", "DELETE", "HEAD"],
+          AllowedOrigins: ["*"], // 프로덕션에서는 특정 도메인으로 제한
+          ExposeHeaders: ["ETag"],
+          MaxAgeSeconds: 3000,
+        },
+      ],
+    };
+
+    const putBucketCorsCommand = new PutBucketCorsCommand({
+      Bucket: bucketName,
+      CORSConfiguration: corsConfiguration,
+    });
+
+    await s3Client.send(putBucketCorsCommand);
+    logger.info({ bucketName }, "CORS configuration applied to bucket");
+
+    // 버킷 정책 설정 (public read 접근을 위한 정책)
+    const bucketPolicy = {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Sid: "PublicReadGetObject",
+          Effect: "Allow",
+          Principal: "*",
+          Action: "s3:GetObject",
+          Resource: `arn:aws:s3:::${bucketName}/profiles/*`, // profiles 폴더만 public read
+        },
+      ],
+    };
+
+    const putBucketPolicyCommand = new PutBucketPolicyCommand({
+      Bucket: bucketName,
+      Policy: JSON.stringify(bucketPolicy),
+    });
+
+    await s3Client.send(putBucketPolicyCommand);
+    logger.info(
+      { bucketName },
+      "Bucket policy applied for public profile images"
+    );
+
+    return { created: true, existed: false };
+  } catch (error: any) {
+    logger.error({ error, bucketName }, "Error creating S3 bucket");
+    return {
+      created: false,
+      existed: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+};
+
+/**
+ * 버킷 존재 확인 및 필요시 생성
+ */
+const ensureBucketExists = async (
+  bucketName: string
+): Promise<BucketCreationResult> => {
+  try {
+    const bucketExists = await checkBucketExists(bucketName);
+
+    if (bucketExists) {
+      logger.debug({ bucketName }, "S3 bucket already exists");
+      return { created: false, existed: true };
+    }
+
+    logger.info({ bucketName }, "S3 bucket does not exist, creating...");
+    return await createBucketWithConfiguration(bucketName);
+  } catch (error: any) {
+    logger.error({ error, bucketName }, "Error checking/creating S3 bucket");
+    return {
+      created: false,
+      existed: false,
+      error: error instanceof Error ? error.message : "Unknown error",
+    };
+  }
+};
+
+/**
+ * 파일을 S3에 직접 업로드 (버킷 자동 생성 포함)
  */
 export const uploadFileToS3 = async (
-  options: UploadFileOptions
+  options: UploadFileOptions,
+  retryCount: number = 0
 ): Promise<UploadResult> => {
+  const MAX_RETRIES = 2;
+
   try {
     if (!S3_BUCKET_NAME) {
       throw new Error("S3 bucket name is not configured");
@@ -92,7 +236,6 @@ export const uploadFileToS3 = async (
       Key: fileKey,
       Body: fileBuffer,
       ContentType: contentType,
-      ACL: isPublic ? "public-read" : "private",
       Metadata: {
         userId,
         originalName: fileName,
@@ -100,7 +243,7 @@ export const uploadFileToS3 = async (
       },
     });
 
-    // S3에 파일 업로드
+    // S3에 파일 업로드 시도
     await s3Client.send(putObjectCommand);
 
     // 파일 URL 생성
@@ -130,90 +273,58 @@ export const uploadFileToS3 = async (
         fileName,
         fileSize: fileBuffer.length,
         userId,
+        retryCount,
       },
       "File uploaded to S3 successfully"
     );
 
     return result;
-  } catch (error) {
-    logger.error(
-      { error, fileName: options.fileName, userId: options.userId },
-      "Error uploading file to S3"
-    );
-    throw new Error(
-      `Failed to upload file to S3: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
-  }
-};
+  } catch (error: any) {
+    // 버킷이 존재하지 않는 경우 처리
+    if (
+      (error.name === "NoSuchBucket" ||
+        error.$metadata?.httpStatusCode === 404 ||
+        error.message?.includes("does not exist")) &&
+      retryCount < MAX_RETRIES &&
+      S3_BUCKET_NAME // null 체크 추가
+    ) {
+      logger.warn(
+        { bucketName: S3_BUCKET_NAME, retryCount },
+        "Bucket does not exist, attempting to create and retry upload"
+      );
 
-/**
- * Presigned URL 생성 (클라이언트에서 직접 업로드용)
- */
-export const generatePresignedUploadUrl = async (
-  options: PresignedUrlOptions
-): Promise<{
-  uploadUrl: string;
-  fileKey: string;
-  expiresAt: string;
-}> => {
-  try {
-    if (!S3_BUCKET_NAME) {
-      throw new Error("S3 bucket name is not configured");
+      // 버킷 생성 시도
+      const bucketResult = await ensureBucketExists(S3_BUCKET_NAME);
+
+      if (bucketResult.created || bucketResult.existed) {
+        logger.info(
+          { bucketName: S3_BUCKET_NAME, created: bucketResult.created },
+          "Bucket is now available, retrying upload"
+        );
+
+        // 재시도 (잠시 대기 후)
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return uploadFileToS3(options, retryCount + 1);
+      } else {
+        throw new Error(
+          `Failed to create bucket: ${bucketResult.error || "Unknown error"}`
+        );
+      }
     }
 
-    const {
-      fileName,
-      contentType,
-      folder = "uploads",
-      userId,
-      expiresIn = 300,
-    } = options; // 5분 기본
-
-    // 파일 키 생성
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileKey = `${folder}/${userId}/${timestamp}_${fileName}`;
-
-    // Presigned URL 생성
-    const putObjectCommand = new PutObjectCommand({
-      Bucket: S3_BUCKET_NAME,
-      Key: fileKey,
-      ContentType: contentType,
-      Metadata: {
-        userId,
-        originalName: fileName,
-      },
-    });
-
-    const uploadUrl = await getSignedUrl(s3Client, putObjectCommand, {
-      expiresIn,
-    });
-
-    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
-
-    logger.info(
-      {
-        fileKey,
-        fileName,
-        userId,
-        expiresIn,
-      },
-      "Presigned upload URL generated"
-    );
-
-    return {
-      uploadUrl,
-      fileKey,
-      expiresAt,
-    };
-  } catch (error) {
     logger.error(
-      { error, fileName: options.fileName, userId: options.userId },
-      "Error generating presigned upload URL"
+      {
+        error,
+        fileName: options.fileName,
+        userId: options.userId,
+        retryCount,
+        bucketName: S3_BUCKET_NAME,
+      },
+      "Error uploading file to S3"
     );
+
     throw new Error(
-      `Failed to generate presigned upload URL: ${
+      `Failed to upload file to S3: ${
         error instanceof Error ? error.message : "Unknown error"
       }`
     );
@@ -275,64 +386,6 @@ export const deleteFileFromS3 = async (fileKey: string): Promise<void> => {
     logger.error({ error, fileKey }, "Error deleting file from S3");
     throw new Error(
       `Failed to delete file from S3: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
-  }
-};
-
-/**
- * 사용자별 파일 목록 조회 (S3 객체 목록)
- */
-export const getUserFiles = async (
-  userId: string,
-  folder: string = "uploads"
-): Promise<{
-  files: Array<{
-    key: string;
-    fileName: string;
-    size: number;
-    lastModified: string;
-    contentType?: string;
-  }>;
-  totalCount: number;
-}> => {
-  try {
-    if (!S3_BUCKET_NAME) {
-      throw new Error("S3 bucket name is not configured");
-    }
-
-    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
-
-    const listCommand = new ListObjectsV2Command({
-      Bucket: S3_BUCKET_NAME,
-      Prefix: `${folder}/${userId}/`,
-      MaxKeys: 100,
-    });
-
-    const response = await s3Client.send(listCommand);
-    const objects = response.Contents || [];
-
-    const files = objects.map((obj) => ({
-      key: obj.Key || "",
-      fileName: obj.Key?.split("/").pop()?.split("_").slice(1).join("_") || "",
-      size: obj.Size || 0,
-      lastModified: obj.LastModified?.toISOString() || "",
-    }));
-
-    logger.info(
-      { userId, fileCount: files.length },
-      "Retrieved user files from S3"
-    );
-
-    return {
-      files,
-      totalCount: files.length,
-    };
-  } catch (error) {
-    logger.error({ error, userId }, "Error retrieving user files from S3");
-    throw new Error(
-      `Failed to retrieve user files: ${
         error instanceof Error ? error.message : "Unknown error"
       }`
     );
@@ -416,10 +469,8 @@ export const getContentType = (fileName: string): string => {
 
 export default {
   uploadFileToS3,
-  generatePresignedUploadUrl,
   generatePresignedDownloadUrl,
   deleteFileFromS3,
-  getUserFiles,
   validateFileType,
   validateFileSize,
   getContentType,

@@ -8,7 +8,7 @@ import logger from "./utils/logger";
 import { testConnection, createTables } from "./config/supabase-client";
 import githubRoutes from "./routes/github-api";
 import githubMyRoutes from "./routes/github-my-api";
-import s3Routes from "./routes/s3-api";
+import fastifyMultipart from "@fastify/multipart";
 
 // 환경 변수 로드
 dotenv.config();
@@ -29,7 +29,7 @@ const fastify = Fastify({
     },
   },
   // JSON 파서 설정 - 빈 본문 허용
-  bodyLimit: 1048576, // 1MiB
+  bodyLimit: 10 * 1024 * 1024, // 10MiB (프로필 이미지 업로드를 위해 증가)
   ajv: {
     customOptions: {
       removeAdditional: false,
@@ -76,9 +76,6 @@ fastify.register(githubRoutes, { prefix: "/api" });
 
 // 사용자 관련 라우트 등록
 fastify.register(githubMyRoutes, { prefix: "/api" });
-
-// S3 API 라우트 등록
-fastify.register(s3Routes, { prefix: "/api" });
 
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {

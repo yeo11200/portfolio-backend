@@ -201,7 +201,7 @@ export const getGitHubUser = async (
 export const saveOrUpdateUser = async (
   githubUser: GitHubUser,
   tokenData: GitHubToken
-): Promise<string> => {
+): Promise<{ id: string; profile_image_url?: string | null }> => {
   try {
     // 먼저 기존 사용자 확인
     const { data: existingUsers, error: fetchError } = await supabaseClient
@@ -237,7 +237,7 @@ export const saveOrUpdateUser = async (
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
-        .select("id")
+        .select("id, profile_image_url")
         .single();
 
       if (error) {
@@ -245,7 +245,7 @@ export const saveOrUpdateUser = async (
         throw new Error("Failed to create user");
       }
 
-      return data.id;
+      return { id: data.id, profile_image_url: data?.profile_image_url };
     }
 
     // 기존 사용자가 있으면 토큰 정보 업데이트
@@ -269,7 +269,10 @@ export const saveOrUpdateUser = async (
       throw new Error("Failed to update user");
     }
 
-    return existingUser.id;
+    return {
+      id: existingUser.id,
+      profile_image_url: existingUser?.profile_image_url || null,
+    };
   } catch (error) {
     logger.error(
       { error, githubId: githubUser.id },

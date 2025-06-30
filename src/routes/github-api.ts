@@ -86,16 +86,16 @@ export default async function githubRoutes(
         logger.info(`Server is running on ${userId} userId`);
 
         // JWT 토큰 생성
-        const token = generateToken(userId);
+        const token = generateToken(userId.id);
 
         return reply.send({
           status: "success",
           data: {
             token,
             user: {
-              id: userId,
+              id: userId.id,
               username: githubUser.login,
-              avatar_url: githubUser.avatar_url,
+              avatar_url: userId.profile_image_url || githubUser.avatar_url,
             },
           },
         });
