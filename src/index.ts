@@ -2,13 +2,13 @@ import Fastify from "fastify";
 import dotenv from "dotenv";
 import routes from "./routes/api";
 import voteRoutes from "./routes/vote-api";
-import scrapeJob, { runScrapeJob, runAnalysisJob } from "./jobs/scrape-job";
+import scrapeJob from "./jobs/scrape-job";
 import cleanupJob from "./jobs/cleanup-job";
 import logger from "./utils/logger";
 import { testConnection, createTables } from "./config/supabase-client";
 import githubRoutes from "./routes/github-api";
 import githubMyRoutes from "./routes/github-my-api";
-import fastifyMultipart from "@fastify/multipart";
+import resumeRoutes from "./routes/resume-api";
 
 // 환경 변수 로드
 dotenv.config();
@@ -76,6 +76,9 @@ fastify.register(githubRoutes, { prefix: "/api" });
 
 // 사용자 관련 라우트 등록
 fastify.register(githubMyRoutes, { prefix: "/api" });
+
+// 이력서 관련 라우트 등록
+fastify.register(resumeRoutes, { prefix: "/api" });
 
 // 서버 시작 함수
 const startServer = async (): Promise<void> => {

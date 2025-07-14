@@ -130,6 +130,30 @@ export const createTables = async (): Promise<boolean> => {
           BEFORE UPDATE ON repository_summaries
           FOR EACH ROW
           EXECUTE FUNCTION update_updated_at_column();
+
+        -- 📝 user_resumes 테이블 (이력서 관리)
+        CREATE TABLE IF NOT EXISTS user_resumes (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID NOT NULL,
+          original_filename VARCHAR(255),
+          original_file_url TEXT,
+          original_file_key VARCHAR(500),
+          extracted_text TEXT,
+          parsed_data JSONB DEFAULT '{}'::JSONB,
+          portfolio_resume TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_user_resumes_user_id ON user_resumes(user_id);
+        CREATE INDEX IF NOT EXISTS idx_user_resumes_created_at ON user_resumes(created_at DESC);
+
+        -- 📌 트리거 등록 (user_resumes)
+        DROP TRIGGER IF EXISTS trg_update_user_resumes_updated_at ON user_resumes;
+        CREATE TRIGGER trg_update_user_resumes_updated_at
+          BEFORE UPDATE ON user_resumes
+          FOR EACH ROW
+          EXECUTE FUNCTION update_updated_at_column();
       `,
     });
 

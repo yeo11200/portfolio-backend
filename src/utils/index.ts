@@ -1,4 +1,6 @@
+import OpenAI from "openai";
 import logger from "./logger";
+import dotenv from "dotenv";
 
 /**
  * 간단한 날짜 형식을 ISO 8601 형식으로 변환
@@ -54,5 +56,48 @@ export const convertToISO8601 = (
   } catch (error) {
     logger.warn({ dateStr, error }, "Failed to convert date format");
     return dateStr; // 변환 실패 시 원본 반환
+  }
+};
+
+/**
+ * OpenRouter API를 사용하는 OpenAI 클라이언트를 생성합니다.
+ * @returns Promise<OpenAI> - OpenAI 클라이언트 인스턴스
+ * @throws Error - API 키가 없거나 클라이언트 생성 실패 시
+ */
+export const handleOpenAi = async (): Promise<OpenAI> => {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "OpenRouter API key must be defined in environment variables"
+    );
+  }
+
+  try {
+    // OpenRouter 클라이언트 생성 (OpenAI 패키지의 내장 타입 사용)
+    const openai = new OpenAI({
+      baseURL: "https://openrouter.ai/api/v1",
+      apiKey,
+      defaultHeaders: {
+        "HTTP-Referer": "https://portfolio-backend.example.com",
+        "X-Title": "Resume Processing Service",
+      },
+    });
+
+    logger.info("OpenAI client created successfully");
+    return openai;
+  } catch (error) {
+    logger.error(
+      {
+        error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
+      },
+      "Failed to create OpenAI client"
+    );
+    throw new Error(
+      `Failed to create OpenAI client: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }`
+    );
   }
 };

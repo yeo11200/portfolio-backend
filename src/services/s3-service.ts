@@ -238,7 +238,7 @@ export const uploadFileToS3 = async (
       ContentType: contentType,
       Metadata: {
         userId,
-        originalName: fileName,
+        originalName: Buffer.from(fileName, "utf8").toString("base64"),
         uploadedAt: new Date().toISOString(),
       },
     });
